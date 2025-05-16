@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RPG Character Combat Simulator</title>
+    <link rel="stylesheet" href="styles.css">
+    <!-- Füge die Projektil-Styles ein -->
+    <link rel="stylesheet" href="projectileStyles.css">
+    <style>
+    /* Arena styles */
+    .battlefield {
+        display: block;
+        margin-top: 30px;
+        padding: 20px;
+        background-color: #f8f8f8;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+    }
+
+    .battlefield-content {
+        min-height: 400px;
+        padding: 20px;
+    }
+
+    .arena-team {
+        margin-bottom: 30px;
+        padding: 15px;
+        border: 1px solid #ddd;
+        border-radius: 5px;
+        background-color: rgba(255, 255, 255, 0.8);
+    }
+
+    .arena-team h3 {
+        margin-bottom: 15px;
+        color: #444;
+        border-bottom: 1px solid #ddd;
+        padding-bottom: 5px;
+    }
+
+    .arena-team-members {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 20px;
+    }
+
+    .arena-character {
+        text-align: center;
+        background-color: #fff;
+        border-radius: 5px;
+        padding: 10px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        width: 120px;
+    }
+
+    .arena-character img {
+        width: 80px;
+        height: 80px;
+        object-fit: contain;
+        margin-bottom: 8px;
+    }
+
+    .back-button {
+        padding: 10px 20px;
+        background-color: #4a6fa5;
+        color: white;
+        border: none;
+        border-radius: 5px;
+        cursor: pointer;
+        margin-top: 20px;
+        font-weight: bold;
+    }
+
+    .back-button:hover {
+        background-color: #3b5998;
+    }
+    /* Battle log styles */
+    .battle-log-container {
+        margin-top: 20px;
+        width: 100%;
+        border: 1px solid #ddd;
+        border-radius: 5px;
+        background-color: #fff;
+        padding: 10px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+
+    .battle-log-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding-bottom: 8px;
+        margin-bottom: 10px;
+        border-bottom: 1px solid #eee;
+    }
+
+    .battle-log-title {
+        font-weight: bold;
+        color: #444;
+        font-size: 16px;
+    }
+
+    .battle-log-content {
+        min-height: 150px;
+        max-height: 200px;
+        overflow-y: auto;
+        padding: 10px;
+        background-color: #f9f9f9;
+        border-radius: 4px;
+        font-family: monospace;
+        line-height: 1.5;
+        white-space: pre-wrap;
+    }
+
+    .battle-log-entry {
+        margin-bottom: 8px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid #eee;
+    }
+
+    .battle-log-entry:last-child {
+        margin-bottom: 0;
+        padding-bottom: 0;
+        border-bottom: none;
+    }
+
+    .log-turn-header {
+        font-weight: bold;
+        color: #e74c3c;
+        text-align: center;
+        margin: 10px 0;
+    }
+    
+    /* Inline-Styles für die Schrotflinte hinzufügen (für den Fall, dass die externe Datei nicht geladen wird) */
+    .projectile.shotgun {
+        width: 8px;
+        height: 8px;
+        background-color: #e74c3c;
+        border-radius: 50%;
+        box-shadow: 0 0 3px #ff9966;
+    }
+
+    .shotgun-cone {
+        position: absolute;
+        pointer-events: none;
+        background-color: rgba(231, 76, 60, 0.2);
+        border: 1px solid rgba(231, 76, 60, 0.4);
+        clip-path: polygon(0% 50%, 100% 0%, 100% 100%);
+        z-index: 90;
+        transform-origin: left center;
+    }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Pokemon-Arena</h1>
+        </header>
+        
+        <section class="character-selection">
+                   
+            <!-- Update the simulator controls section -->
+                <div class="simulator-controls">
+                    <h3>Kampf-Einstellungen</h3>
+                    <div class="control-group">
+                        <div class="control-item">
+                            <label for="team-count">Anzahl Teams:</label>
+                            <input type="number" id="team-count" min="2" max="10" value="2" class="number-input">
+                        </div>
+                        <div class="control-item">
+                            <label for="fighters-per-team">Pokémon pro Team:</label>
+                            <input type="number" id="fighters-per-team" min="1" max="6" value="1" class="number-input">
+                        </div>
+                        <!-- Move the fight button here -->
+                        <button id="fight-button" class="fight-button disabled" disabled>KAMPF!</button>
+                    </div>
+                </div>
+
+                <div class="game-area">
+                    <div class="teams-container">
+                        <h3>Teams</h3>
+                        <div class="teams-list" id="teams-list">
+                            <!-- Team slots will be generated here by JavaScript -->
+                        </div>
+                    </div>
+                    
+                    <!-- Remove the battle-controls section as we moved the button -->
+                </div>
+        </section>
+        
+        <section class="combat-area" id="combat-area">
+            <!-- Combat area content will be populated by JavaScript -->
+        </section>
+    </div>
+    
+    <script type ="module" src="main.js"></script>
+    <script type="module" src="charakterAuswahlMain.js"></script>
+</body>
+</html>
