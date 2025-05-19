@@ -79,7 +79,6 @@ export async function getAvailableTrainerIcons() {
         'Diamond.png',
         'Gold.png',
         'Green.png',
-        'Green.png',
         'Krys.png',
         'Max.png',
         'Misty.png',
