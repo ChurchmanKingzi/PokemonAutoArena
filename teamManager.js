@@ -1265,36 +1265,28 @@ async function openTrainerIconSelector(teamIndex) {
         iconGrid.className = 'trainer-icon-grid';
         iconGrid.style.display = 'grid';
         iconGrid.style.gridTemplateColumns = 'repeat(4, 1fr)';
-        iconGrid.style.gap = '10px';
-        iconGrid.style.marginBottom = '20px';
+        iconGrid.style.gap = '6px';
+        iconGrid.style.marginBottom = '6px';
         
         // Add available icons
         availableIcons.forEach(iconName => {
             const iconOption = document.createElement('div');
             iconOption.className = 'trainer-icon-option';
             iconOption.style.cursor = 'pointer';
-            iconOption.style.padding = '10px';
+            iconOption.style.padding = '2px';
             iconOption.style.border = '2px solid transparent';
-            iconOption.style.borderRadius = '8px';
+            iconOption.style.borderRadius = '2px';
             iconOption.style.textAlign = 'center';
             iconOption.style.transition = 'all 0.3s ease';
             
             const iconImg = document.createElement('img');
             iconImg.src = `TrainerIcons/${iconName}`;
             iconImg.alt = iconName;
-            iconImg.style.width = '80px';
-            iconImg.style.height = '80px';
+            iconImg.style.width = '90px';
+            iconImg.style.height = '90px';
             iconImg.style.objectFit = 'contain';
             
-            // Add filename label
-            const iconLabel = document.createElement('div');
-            iconLabel.textContent = iconName.replace(/\.[^/.]+$/, ""); // Remove file extension
-            iconLabel.style.fontSize = '12px';
-            iconLabel.style.marginTop = '5px';
-            iconLabel.style.color = '#666';
-            
             iconOption.appendChild(iconImg);
-            iconOption.appendChild(iconLabel);
             
             // Check if this is the current icon
             if (trainers[teamIndex].icon === iconName) {

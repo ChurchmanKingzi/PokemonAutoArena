@@ -27,14 +27,43 @@ function initializeGlobalTooltip() {
         globalTooltip.style.position = 'fixed';
         globalTooltip.style.zIndex = '10000';
         globalTooltip.style.display = 'none';
-        globalTooltip.style.pointerEvents = 'none'; // Prevent it from interfering with mouse events
+        globalTooltip.style.pointerEvents = 'auto'; // Allow mouse events on tooltip
         
         // Add to the body
         document.body.appendChild(globalTooltip);
         
         // Add the tooltip styles
         addTooltipStyles();
+        
+        // Add event listeners to the tooltip itself
+        globalTooltip.addEventListener('mouseenter', () => {
+            // Clear any pending hide timeout when mouse enters tooltip
+            if (tooltipHideTimeout) {
+                clearTimeout(tooltipHideTimeout);
+                tooltipHideTimeout = null;
+            }
+        });
+        
+        globalTooltip.addEventListener('mouseleave', () => {
+            // Hide tooltip with delay when mouse leaves tooltip
+            hideTooltipWithDelay();
+        });
     }
+}
+
+/**
+ * Hide tooltip with a short delay (like in tooltip.js)
+ */
+function hideTooltipWithDelay() {
+    // Clear any existing timeout
+    if (tooltipHideTimeout) {
+        clearTimeout(tooltipHideTimeout);
+    }
+    
+    // Set a new timeout
+    tooltipHideTimeout = setTimeout(() => {
+        hideTooltip();
+    }, 150); // 150ms delay to allow mouse to enter tooltip
 }
 
 /**
@@ -550,7 +579,8 @@ export function displayInitiativeOrder(sortedCharacterList = null) {
             });
             
             characterItem.addEventListener('mouseleave', () => {
-                hideTooltip();
+                // Use delay instead of immediate hide to allow hovering over tooltip
+                hideTooltipWithDelay();
             });
             
             // For touch devices, handle tap/click
@@ -573,7 +603,10 @@ export function displayInitiativeOrder(sortedCharacterList = null) {
     
     // Add click handler to document to close tooltip when clicking elsewhere
     document.addEventListener('click', (e) => {
-        if (currentHoveredElement && !currentHoveredElement.contains(e.target)) {
+        // Only hide if clicking outside both the character element and the tooltip
+        if (currentHoveredElement && 
+            !currentHoveredElement.contains(e.target) && 
+            (!globalTooltip || !globalTooltip.contains(e.target))) {
             hideTooltip(true);
         }
     });

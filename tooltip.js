@@ -657,6 +657,12 @@ export function attachTooltipToBattlefieldCharacter(characterElement, character)
  * @param {Object} character - The character data
  */
 export function showTooltipForElement(element, character) {
+    // Clear any pending hide timeout
+    if (tooltipHideTimeout) {
+        clearTimeout(tooltipHideTimeout);
+        tooltipHideTimeout = null;
+    }
+    
     // Hide any existing tooltip
     if (activeTooltip) {
         hideTooltip(true);
@@ -690,7 +696,7 @@ export function showTooltipForElement(element, character) {
     activeTooltip = tooltip;
     activeTarget = element;
     
-    // Add mouseleave event to the target element
+    // Add mouseleave event to the target element that uses delay
     element.addEventListener('mouseleave', handleTargetMouseLeave);
     
     // Set up tooltip styles
@@ -699,6 +705,7 @@ export function showTooltipForElement(element, character) {
     tooltip.style.maxHeight = '80vh';
     tooltip.style.overflowY = 'auto';
     tooltip.style.scrollBehavior = 'smooth';
+    tooltip.style.pointerEvents = 'auto'; // Ensure tooltip can receive mouse events
     
     // Apply custom scrollbar styles
     addTooltipStyles();
@@ -738,7 +745,7 @@ function handleTooltipWheel(event) {
 }
 
 /**
- * Handle mouse leaving the target element
+ * Handle mouse leaving the target element with delayed hide
  */
 function handleTargetMouseLeave() {
     // Don't hide immediately - give time for mouse to enter tooltip
