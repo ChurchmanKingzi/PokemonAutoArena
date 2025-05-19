@@ -3,6 +3,9 @@
  */
 
 import { RANGED_WEAPON_TYPES } from './charakterAuswahlConfig.js';
+import { integrateCustomMonsters } from './fakeMons.js';
+import { getAbilities, getAbilityDescription } from './abilityService.js';
+
 
 // Track which sprite numbers have been used
 export const usedSpriteNumbers = new Set();
@@ -34,6 +37,44 @@ const STAT_NAMES_DE = {
     'special-defense': 'Spezial-Verteidigung',
     'speed': 'Initiative'
 };
+
+/**
+ * Get abilities for a Pokemon from the ability service
+ * @param {number} pokemonId - The Pokemon ID
+ * @returns {Array} - Array of ability objects with name, description, and isHidden
+ */
+export function getPokemonAbilitiesFromService(pokemonId) {
+    try {
+        // Get ability names from the service
+        const abilityNames = getAbilities(pokemonId);
+        
+        // Convert ability names to ability objects
+        const abilities = [];
+        
+        abilityNames.forEach((abilityName, index) => {
+            // Skip empty or "Leer" abilities
+            if (!abilityName || abilityName === "Leer") {
+                return;
+            }
+            
+            // Get description from the service
+            const description = getAbilityDescription(abilityName);
+            
+            // Create ability object
+            abilities.push({
+                name: abilityName,
+                englishName: abilityName.toLowerCase().replace(/\s+/g, '-'), // Create a simple English name
+                isHidden: index === 2, // Third ability is typically hidden
+                description: description || "Keine Beschreibung verfügbar."
+            });
+        });
+        
+        return abilities;
+    } catch (error) {
+        console.error(`Error getting abilities for Pokemon ${pokemonId}:`, error);
+        return [];
+    }
+}
 
 /**
  * Load Pokémon from PokeAPI with additional details
@@ -85,7 +126,7 @@ export async function loadPokemon() {
                         const pokemonResponse = await fetch(pokemon.url);
                         const pokemonData = await pokemonResponse.json();
                         
-                        // Get species data for German name and abilities
+                        // Get species data for German name
                         const speciesResponse = await fetch(pokemonData.species.url);
                         const speciesData = await speciesResponse.json();
                         
@@ -108,40 +149,8 @@ export async function loadPokemon() {
                             statsWithGermanNames[germanStatName] = stat.base_stat;
                         });
                         
-                        // Get abilities with German names
-                        const abilitiesData = await Promise.all(
-                            pokemonData.abilities.map(async ability => {
-                                try {
-                                    const abilityResponse = await fetch(ability.ability.url);
-                                    const abilityData = await abilityResponse.json();
-                                    
-                                    // Find German name for ability
-                                    const germanAbilityName = abilityData.names.find(nameEntry => 
-                                        nameEntry.language.name === "de"
-                                    )?.name || abilityData.name;
-                                    
-                                    // Find German flavor text if available
-                                    const germanFlavorText = abilityData.flavor_text_entries.find(entry => 
-                                        entry.language.name === "de"
-                                    )?.flavor_text || "";
-                                    
-                                    return {
-                                        name: germanAbilityName,
-                                        englishName: ability.ability.name,
-                                        isHidden: false,
-                                        description: germanFlavorText.replace(/\n/g, ' ')
-                                    };
-                                } catch (error) {
-                                    console.error(`Error fetching ability ${ability.ability.name}:`, error);
-                                    return {
-                                        name: ability.ability.name,
-                                        englishName: ability.ability.name,
-                                        isHidden: ability.is_hidden,
-                                        description: ""
-                                    };
-                                }
-                            })
-                        );
+                        // Get abilities from the ability service instead of PokeAPI
+                        const abilitiesData = getPokemonAbilitiesFromService(pokemonData.id);
                         
                         // Calculate GENA and PA values
                         const gena = Math.ceil(baseStatTotal / 50);
@@ -175,7 +184,7 @@ export async function loadPokemon() {
                             height: heightInMeters,
                             weight: pokemonData.weight / 10, // Weight in kg (API gives weight in hectograms)
                             types: pokemonData.types.map(type => type.type.name),
-                            abilities: abilitiesData,
+                            abilities: abilitiesData, // Now using the ability service
                             gena: gena,
                             pa: pa
                         };
@@ -274,6 +283,11 @@ export async function loadPokemon() {
                                 statsWithGermanNames[germanStatName] = stat.base_stat;
                             });
                             
+                            // Get abilities from the ability service for variant forms
+                            // Use a high ID for variants to avoid conflicts
+                            const variantId = 10000 + formData.id;
+                            const abilitiesData = getPokemonAbilitiesFromService(variantId);
+                            
                             // Calculate GENA and PA values
                             const gena = Math.ceil(baseStatTotal / 50);
                             
@@ -292,7 +306,7 @@ export async function loadPokemon() {
                             else if (heightInMeters <= 5) pa += 1;  // Under 5m
                             
                             return {
-                                id: 10000 + formData.id, // Use a high ID for variants to avoid conflicts
+                                id: variantId, // Use a high ID for variants to avoid conflicts
                                 name: germanName,
                                 englishName: form.name,
                                 sprite: formData.sprites.front_default || pokemonData.sprites.front_default,
@@ -307,6 +321,7 @@ export async function loadPokemon() {
                                 height: heightInMeters,
                                 weight: pokemonData.weight / 10, // Weight in kg
                                 types: pokemonData.types.map(type => type.type.name),
+                                abilities: abilitiesData, // Now using the ability service
                                 isVariant: true,
                                 baseFormId: pokemonData.id,
                                 gena: gena,
@@ -346,6 +361,14 @@ export async function loadPokemon() {
         pokemonLoaded = true;
         console.log(`Successfully loaded ${pokemonCache.length} Pokémon including variants`);
         
+        try {
+            const customMonstersIntegrator = integrateCustomMonsters();
+            pokemonCache = customMonstersIntegrator(pokemonCache);
+            console.log(`Added custom monsters. Total available: ${pokemonCache.length}`);
+        } catch (error) {
+            console.error("Failed to add custom monsters:", error);
+        }
+
         return pokemonCache;
     } catch (error) {
         console.error("Error loading Pokémon:", error);
@@ -389,7 +412,7 @@ function convertPokemonToCharacter(pokemon) {
     let fliegend = false;
     // Check if Pokemon has Flying, Ghost or Dragon type
     if (pokemon.types && pokemon.types.some(type => 
-        ["flying", "ghost", "dragon"].includes(type.toLowerCase()))) {
+        ["flying", "dragon"].includes(type.toLowerCase()))) {
         fliegend = true;
     }
     // Check if Pokemon has Schwebe or Schwebedurch ability
@@ -444,6 +467,7 @@ function convertPokemonToCharacter(pokemon) {
         strategy: 'aggressive',
         forcingMode: 'always',
         // Add Pokémon types with German translations
+        types: pokemon.types, // Keep this for compatibility
         pokemonTypes: pokemon.types,
         pokemonTypesDe: typesDe,
         // Add terrain attributes
@@ -479,22 +503,24 @@ export function getCharacterTemplate(pokemonId) {
     const pokemon = pokemonCache.find(p => p.id === id);
     
     if (pokemon) {
+        // SPECIAL HANDLING FOR CUSTOM MONSTERS
+        if (pokemon.isCustomMonster && pokemon.availableMoves) {
+            // For custom monsters, we use the character conversion but preserve availableMoves
+            const character = convertPokemonToCharacter(pokemon);
+            
+            // Add the availableMoves directly from the custom monster
+            character.availableMoves = pokemon.availableMoves;
+            
+            // Initialize selected moves array if not present
+            if (!character.selectedMoves) {
+                character.selectedMoves = [null, null, null, null];
+            }
+            
+            return character;
+        }
+        
         return convertPokemonToCharacter(pokemon);
     }
-    
-    // Fallback to Pikachu if Pokémon not found
-    return {
-        name: "Pikachu",
-        spriteNum: 1,
-        attributes: { main: { ko: 10 } },
-        combatStats: { kp: 25 },
-        strategy: 'aggressive',
-        forcingMode: 'always',
-        inventory: [
-            { name: "Pokéball", quantity: 3 },
-            { name: "Batterie", quantity: 2 }
-        ]
-    };
 }
 
 /**
@@ -512,7 +538,13 @@ export async function getAvailableTemplates() {
             id: pokemon.id,
             name: pokemon.name,
             sprite: pokemon.sprite
-        }));
+        })).filter(pokemon => {
+            // Check if the name contains Gigantamax/Gigadynamax indicators
+            return !pokemon.name.includes("(Gigantamax)") && 
+                !pokemon.name.includes("(Gigadynamax)") &&
+                !pokemon.name.includes("-Gigantamax") &&
+                !pokemon.name.includes("-Gigadynamax");
+        });;
     } catch (error) {
         console.error("Error getting available templates:", error);
         return [];
@@ -675,6 +707,15 @@ export async function enhanceCharacterWithMoves(character) {
     }
     
     try {
+        // Skip API call if moves are already defined (for custom Pokémon)
+        if (character.availableMoves && character.availableMoves.length > 0) {
+            // Just ensure selected moves array is initialized
+            if (!character.selectedMoves) {
+                character.selectedMoves = [null, null, null, null];
+            }
+            return character;
+        }
+        
         // Get all moves for this Pokémon
         const moves = await getPokemonMoves(character.englishName);
         

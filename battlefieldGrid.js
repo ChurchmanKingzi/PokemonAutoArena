@@ -1,16 +1,15 @@
 /**
  * Battlefield grid creation and management
- * With improved Pokémon size category integration
+ * Updated to use the new Pokemon overlay system - Pokemon are no longer placed in tiles
  */
 
 import { GRID_SIZE, TILE_SIZE } from './config.js';
-import { getStrategyText, getStrategyBorderStyle, getTeamColor, hexToRgba, blendColors } from './utils.js';
 import { getTerrainGrid } from './terrainGenerator.js';
 import { TERRAIN_COLORS, TERRAIN_COLORS_DARK } from './terrainRenderer.js';
-import { calculateSizeCategory, applySizeToElement, initializePokemonSizes, debugPokemonSizes } from './pokemonSizeCalculator.js';
+import { createPokemonOverlay, addPokemonToOverlay } from './pokemonOverlay.js';
 
 /**
- * Create the battlefield grid
+ * Create the battlefield grid (without Pokemon - they're now in the overlay)
  * @param {number} gridSize - Size of the grid (gridSize x gridSize)
  * @param {Array} teamAreas - Team starting areas
  * @param {Object} characterPositions - Map of character IDs to their positions
@@ -19,6 +18,7 @@ import { calculateSizeCategory, applySizeToElement, initializePokemonSizes, debu
 export function createBattlefieldGrid(gridSize, teamAreas, characterPositions) {
     const container = document.createElement('div');
     container.className = 'battlefield-grid-container';
+    container.style.position = 'relative'; // Important for overlay positioning
     
     const grid = document.createElement('div');
     grid.className = 'battlefield-grid';
@@ -27,11 +27,12 @@ export function createBattlefieldGrid(gridSize, teamAreas, characterPositions) {
     grid.style.gridTemplateRows = `repeat(${gridSize}, ${TILE_SIZE}px)`;
     grid.style.gap = '0';
     grid.style.border = '1px solid #333';
+    grid.style.position = 'relative';
     
     // Get the terrain grid
     const terrainGrid = getTerrainGrid();
     
-    // Create tiles and apply terrain colors
+    // Create tiles (without Pokemon sprites)
     for (let y = 0; y < gridSize; y++) {
         for (let x = 0; x < gridSize; x++) {
             const tile = document.createElement('div');
@@ -44,7 +45,7 @@ export function createBattlefieldGrid(gridSize, teamAreas, characterPositions) {
                 ? terrainGrid[y][x] 
                 : 'grass'; // Default to grass
             
-            // Apply checkerboard pattern - this should be consistent across all tiles
+            // Apply checkerboard pattern
             const isEven = (x + y) % 2 === 0;
             
             // Set the base color based on terrain type and checkerboard pattern
@@ -54,27 +55,23 @@ export function createBattlefieldGrid(gridSize, teamAreas, characterPositions) {
                 tile.style.backgroundColor = TERRAIN_COLORS_DARK[terrain];
             }
             
-            // Set tile dimensions
+            // Set tile dimensions and properties
             tile.style.width = `${TILE_SIZE}px`;
             tile.style.height = `${TILE_SIZE}px`;
-            // Add position: relative for proper overflow handling
             tile.style.position = 'relative';
             tile.style.overflow = 'visible';
             tile.style.zIndex = '1'; // Base z-index for tiles
             
             // Check if this tile is in a team area and add a team indicator
-            let inTeamArea = false;
             teamAreas.forEach((area, teamIndex) => {
                 if (x >= area.x && x < area.x + area.width && 
                     y >= area.y && y < area.y + area.height) {
-                    
-                    inTeamArea = true;
                     
                     // Apply a semi-transparent team color overlay
                     const teamColor = getTeamColor(teamIndex);
                     const colorWithOpacity = hexToRgba(teamColor, 0.3);
                     
-                    // Create a team indicator overlay div instead of changing background
+                    // Create a team indicator overlay div
                     const teamOverlay = document.createElement('div');
                     teamOverlay.className = 'team-area-overlay';
                     teamOverlay.style.position = 'absolute';
@@ -83,8 +80,8 @@ export function createBattlefieldGrid(gridSize, teamAreas, characterPositions) {
                     teamOverlay.style.width = '100%';
                     teamOverlay.style.height = '100%';
                     teamOverlay.style.backgroundColor = colorWithOpacity;
-                    teamOverlay.style.pointerEvents = 'none'; // Allow clicks to pass through
-                    teamOverlay.style.zIndex = '2'; // Above the tile but below characters
+                    teamOverlay.style.pointerEvents = 'none';
+                    teamOverlay.style.zIndex = '2';
                     
                     // Add the overlay to the tile
                     tile.appendChild(teamOverlay);
@@ -94,80 +91,42 @@ export function createBattlefieldGrid(gridSize, teamAreas, characterPositions) {
                 }
             });
             
+            // Check if this tile is occupied by a Pokemon (for visual indication)
+            // We don't place the Pokemon here anymore, but we can mark the tile
+            for (const charId in characterPositions) {
+                const pos = characterPositions[charId];
+                
+                // Import the occupation check function
+                import('./pokemonDistanceCalculator.js').then(module => {
+                    if (module.doesPokemonOccupyTile(pos, x, y)) {
+                        tile.classList.add('occupied');
+                        tile.dataset.occupiedBy = charId;
+                    }
+                }).catch(console.error);
+            }
+            
             grid.appendChild(tile);
         }
     }
     
+    // Add the grid to the container
     container.appendChild(grid);
     
-    // Add characters to the grid
+    // Create and add the Pokemon overlay as a child of the battlefield grid
+    // This ensures the overlay transforms with the camera when the grid is transformed
+    const pokemonOverlay = createPokemonOverlay(grid);
+    
+    // Now add all Pokemon to the overlay
     for (const charId in characterPositions) {
         const pos = characterPositions[charId];
-        const character = pos.character;
-        const teamIndex = pos.teamIndex;
-        const strategy = character.strategy || 'aggressive';
-        
-        // Find the tile at this position
-        const tile = grid.querySelector(`.battlefield-tile[data-x="${pos.x}"][data-y="${pos.y}"]`);
-        
-        if (tile) {
-            // Create character container div (this will help with positioning larger Pokémon)
-            const characterContainer = document.createElement('div');
-            characterContainer.className = 'battlefield-character-container';
-            characterContainer.style.position = 'relative';
-            characterContainer.style.width = '100%';
-            characterContainer.style.height = '100%';
-            characterContainer.style.overflow = 'visible';
-            characterContainer.style.zIndex = '3'; // Above team overlays
-            
-            // Create character sprite
-            const sprite = document.createElement('img');
-            sprite.src = character.spriteUrl || `Sprites/spr_mage${character.spriteNum || 1}.png`;
-            sprite.alt = character.name;
-            sprite.className = 'battlefield-character';
-            sprite.title = `${character.name} [${getStrategyText(strategy)}]`; // Add strategy to tooltip
-            sprite.style.objectFit = 'contain';
-            sprite.style.transition = 'width 0.3s, height 0.3s, left 0.3s, top 0.3s'; // Smooth transition for size changes
-            sprite.onerror = function() {
-                this.src = `Sprites/spr_mage${character.spriteNum || 1}.png`;
-            };
-            
-            // Add a data attribute to identify the character
-            sprite.dataset.characterId = charId;
-            sprite.dataset.team = teamIndex;
-            sprite.dataset.strategy = strategy;
-            
-            // Visual indicator for strategy (border style)
-            const borderStyle = getStrategyBorderStyle(strategy);
-            sprite.style.border = `2px ${borderStyle.style} ${getTeamColor(teamIndex)}`;
-            if (borderStyle.width) {
-                sprite.style.borderWidth = borderStyle.width;
-            }
-            sprite.style.borderRadius = '50%';
-            sprite.style.boxSizing = 'border-box';
-            
-            // Calculate size category
-            const sizeCategory = calculateSizeCategory(character);
-            
-            // Apply size category to the sprite
-            applySizeToElement(sprite, sizeCategory, TILE_SIZE);
-            
-            // Add sprite to container
-            characterContainer.appendChild(sprite);
-            
-            // Add container to tile
-            tile.appendChild(characterContainer);
-            tile.classList.add('occupied');
-
-            tile.style.zIndex = '1000';
-        }
+        addPokemonToOverlay(charId, pos, pos.teamIndex);
     }
     
     return container;
 }
 
 /**
- * Update the battlefield display with the grid and characters
+ * Update the battlefield display with the grid and Pokemon overlay
  * @param {Array} teamAreas - Team starting areas
  * @param {Object} positions - Character positions
  * @param {number} teamCount - Number of teams
@@ -187,28 +146,41 @@ export function updateBattlefieldDisplay(teamAreas, positions, teamCount) {
     const layoutContainer = document.createElement('div');
     layoutContainer.className = 'battlefield-layout';
     layoutContainer.style.display = 'flex';
-    layoutContainer.style.gap = '20px';
+    layoutContainer.style.width = '100%';
+    layoutContainer.style.height = '100%';
+    layoutContainer.style.minHeight = '500px';
     
-    // Create the battlefield grid
+    // Create the battlefield grid with Pokemon overlay
     const battlefieldGrid = createBattlefieldGrid(GRID_SIZE, teamAreas, positions);
+    
+    // Style the container to ensure it fills available space
+    battlefieldGrid.style.width = '100%';
+    battlefieldGrid.style.height = '100%';
+    battlefieldGrid.style.aspectRatio = '1 / 1'; // Maintain square aspect ratio
     
     // Add the grid to the layout container
     layoutContainer.appendChild(battlefieldGrid);
     
     // Add the layout container to the battlefield content
     battlefieldContent.appendChild(layoutContainer);
-        
-    // Initialize Pokémon sizes on the battlefield
-    initializePokemonSizes(positions);
-    
-    // Run debug function to output size categories in console
-    debugPokemonSizes(positions);
-    
-    // Set a delayed reapplication of sizes to ensure all DOM elements are fully rendered
-    setTimeout(() => {
-        console.log("Re-applying Pokémon sizes to ensure proper display...");
-        initializePokemonSizes(positions);
-    }, 500);
     
     return battlefieldGrid;
+}
+
+// Import utility functions that we need
+function getTeamColor(teamIndex) {
+    // This should be imported from utils.js in the actual implementation
+    const colors = [
+        '#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
+        '#1abc9c', '#34495e', '#e67e22', '#27ae60', '#c0392b'
+    ];
+    return colors[teamIndex % colors.length];
+}
+
+function hexToRgba(hex, alpha) {
+    // Convert hex to rgba with alpha
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }

@@ -74,6 +74,42 @@ export function createCharacterTooltip(character) {
         hpBarContainer.appendChild(hpBar);
         hpSection.appendChild(hpBarContainer);
     }
+
+    //HELD ITEM
+    // Add item section if present (Pokemon can only have one item)
+    if (character.selectedItem) {
+        const separatorI = document.createElement('div');
+        separatorI.className = 'tooltip-separator';
+        tooltip.appendChild(separatorI);
+        
+        const itemsSection = document.createElement('div');
+        itemsSection.className = 'tooltip-section';
+        
+        const itemsTitle = document.createElement('h4');
+        itemsTitle.textContent = 'Item:';
+        itemsSection.appendChild(itemsTitle);
+        
+        const itemElement = document.createElement('div');
+        itemElement.className = 'tooltip-item';
+        
+        const itemName = document.createElement('div');
+        itemName.className = 'tooltip-item-name';
+        itemName.textContent = character.selectedItem.name;
+        
+        itemElement.appendChild(itemName);
+        
+        if (character.selectedItem.effect) {
+            const itemEffect = document.createElement('div');
+            itemEffect.className = 'tooltip-item-effect';
+            itemEffect.textContent = character.selectedItem.effect;
+            itemElement.appendChild(itemEffect);
+        }
+        
+        itemsSection.appendChild(itemElement);
+        tooltip.appendChild(itemsSection);
+    }
+
+
     
     // Add separator after KP
     const separator0 = document.createElement('div');

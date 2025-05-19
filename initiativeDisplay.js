@@ -1,9 +1,13 @@
 /**
- * Initiative display system - revised tooltip implementation
+ * Initiative display system - using display list with defeated characters
+ * Enhanced with trainer information support
  */
 
 import { getTeamColor, getCurrentKP } from './utils.js';
 import { createCharacterTooltip } from './tooltip.js';
+import { getSortedCharactersDisplay } from './initiative.js';
+import { getTrainers } from './teamManager.js';
+import { getTrainerClassById } from './classService.js';
 
 // Global tooltip container
 let globalTooltip = null;
@@ -56,6 +60,12 @@ function showTooltipForElement(element, character) {
     // Move the content from the created tooltip to our global one
     while (tooltipContent.firstChild) {
         globalTooltip.appendChild(tooltipContent.firstChild);
+    }
+    
+    // Add trainer information at the top of the tooltip
+    const trainerInfo = createTrainerInfoElement(character);
+    if (trainerInfo) {
+        globalTooltip.insertBefore(trainerInfo, globalTooltip.firstChild);
     }
     
     // Get element position
@@ -295,6 +305,53 @@ function addTooltipStyles() {
             color: #0d47a1;
             border: 1px solid #64b5f6;
         }
+        
+        /* Trainer info styling in tooltips */
+        .tooltip-trainer-section {
+            margin-bottom: 12px;
+        }
+        
+        .tooltip-trainer-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+        
+        .tooltip-trainer-icon {
+            width: 50px;
+            height: 50px;
+            object-fit: contain;
+            border-radius: 4px;
+            border: 1px solid #555;
+        }
+        
+        .tooltip-trainer-info {
+            flex: 1;
+        }
+        
+        .tooltip-trainer-name {
+            font-size: 16px;
+            font-weight: bold;
+            color: #fff;
+            margin-bottom: 2px;
+        }
+        
+        .tooltip-trainer-class {
+            font-size: 13px;
+            color: #ccc;
+            font-style: italic;
+        }
+        
+        .tooltip-trainer-description {
+            font-size: 12px;
+            color: #bbb;
+            line-height: 1.4;
+            padding: 8px;
+            background-color: rgba(255, 255, 255, 0.05);
+            border-radius: 4px;
+            border-left: 3px solid #4a6fa5;
+        }
     `;
     
     // Add style element to head
@@ -302,12 +359,15 @@ function addTooltipStyles() {
 }
 
 /**
- * Display the initiative order in the Arena, with data attributes for character identification
- * @param {Array} sortedCharacterList - The sorted list of characters
+ * Display the initiative order in the Arena, using the display list that includes defeated characters
+ * @param {Array} sortedCharacterList - Optional parameter, uses display list if not provided
  */
-export function displayInitiativeOrder(sortedCharacterList) {
+export function displayInitiativeOrder(sortedCharacterList = null) {
     // Initialize global tooltip
     initializeGlobalTooltip();
+    
+    // Use the display list if no list is provided
+    const displayList = sortedCharacterList || getSortedCharactersDisplay();
     
     // Find the layout container
     const layoutContainer = document.querySelector('.battlefield-layout');
@@ -331,11 +391,18 @@ export function displayInitiativeOrder(sortedCharacterList) {
     initiativeList.className = 'initiative-list';
     
     // Add each character to the list
-    sortedCharacterList.forEach((entry) => {
+    displayList.forEach((entry) => {
         // Create character item container
         const characterItem = document.createElement('div');
         characterItem.className = 'initiative-item';
         characterItem.dataset.character = entry.character.uniqueId;
+        
+        // Check if the character is defeated
+        const isDefeated = entry.isDefeated || entry.character.isDefeated || entry.character.currentKP <= 0;
+        
+        if (isDefeated) {
+            characterItem.classList.add('defeated');
+        }
         
         // Initialize current KP if not set
         if (!entry.character.currentKP && entry.character.currentKP !== 0) {
@@ -372,8 +439,10 @@ export function displayInitiativeOrder(sortedCharacterList) {
         // Set the bar width based on HP percentage
         hpBar.style.width = `${hpPercent}%`;
         
-        // Determine color based on health percentage
-        if (hpPercent <= 25) {
+        // Determine color based on health percentage (unless defeated)
+        if (isDefeated) {
+            hpBar.style.backgroundColor = '#666'; // Gray for defeated
+        } else if (hpPercent <= 25) {
             hpBar.style.backgroundColor = '#e74c3c'; // Red for critical health
         } else if (hpPercent <= 50) {
             hpBar.style.backgroundColor = '#f39c12'; // Orange for half health
@@ -401,7 +470,7 @@ export function displayInitiativeOrder(sortedCharacterList) {
         // Add team color indicator
         const teamIndicator = document.createElement('div');
         teamIndicator.className = 'team-indicator';
-        teamIndicator.style.backgroundColor = getTeamColor(entry.teamIndex);
+        teamIndicator.style.backgroundColor = isDefeated ? '#666' : getTeamColor(entry.teamIndex);
         infoContainer.appendChild(teamIndicator);
         
         // Add character sprite
@@ -409,16 +478,29 @@ export function displayInitiativeOrder(sortedCharacterList) {
         spriteImg.src = entry.character.spriteUrl || `Sprites/spr_mage${entry.character.spriteNum || 1}.png`;
         spriteImg.alt = entry.character.name || 'Character';
         spriteImg.className = 'initiative-sprite';
+        
+        // Apply grayscale filter to defeated characters
+        if (isDefeated) {
+            spriteImg.style.filter = 'grayscale(100%) opacity(0.7)';
+        }
+        
         infoContainer.appendChild(spriteImg);
         
         // Add character name
         const nameSpan = document.createElement('span');
         nameSpan.className = 'initiative-name';
         nameSpan.textContent = entry.character.name;
+        
+        // Apply strikethrough to defeated characters
+        if (isDefeated) {
+            nameSpan.style.textDecoration = 'line-through';
+            nameSpan.style.color = '#666';
+        }
+        
         infoContainer.appendChild(nameSpan);
 
-        // Add status effects if character has them
-        if (entry.character.statusEffects && entry.character.statusEffects.length > 0) {
+        // Add status effects if character has them (and is not defeated)
+        if (!isDefeated && entry.character.statusEffects && entry.character.statusEffects.length > 0) {
             // Create status icons container
             const statusIconsContainer = document.createElement('div');
             statusIconsContainer.className = 'initiative-status-icons';
@@ -450,32 +532,40 @@ export function displayInitiativeOrder(sortedCharacterList) {
         const initiativeSpan = document.createElement('span');
         initiativeSpan.className = 'initiative-roll';
         initiativeSpan.textContent = `(${entry.initiativeRoll})`;
+        
+        // Apply gray color to defeated character's initiative
+        if (isDefeated) {
+            initiativeSpan.style.color = '#666';
+        }
+        
         infoContainer.appendChild(initiativeSpan);
         
         // Add info container to character item
         characterItem.appendChild(infoContainer);
         
-        // Add event listeners for tooltips - the new way
-        characterItem.addEventListener('mouseenter', () => {
-            showTooltipForElement(characterItem, entry.character);
-        });
-        
-        characterItem.addEventListener('mouseleave', () => {
-            hideTooltip();
-        });
-        
-        // For touch devices, handle tap/click
-        characterItem.addEventListener('click', (e) => {
-            // Toggle the tooltip
-            if (currentHoveredElement === characterItem) {
-                hideTooltip(true);
-            } else {
+        // Add event listeners for tooltips - only for non-defeated characters
+        if (!isDefeated) {
+            characterItem.addEventListener('mouseenter', () => {
                 showTooltipForElement(characterItem, entry.character);
-                
-                // Prevent event bubbling to document
-                e.stopPropagation();
-            }
-        });
+            });
+            
+            characterItem.addEventListener('mouseleave', () => {
+                hideTooltip();
+            });
+            
+            // For touch devices, handle tap/click
+            characterItem.addEventListener('click', (e) => {
+                // Toggle the tooltip
+                if (currentHoveredElement === characterItem) {
+                    hideTooltip(true);
+                } else {
+                    showTooltipForElement(characterItem, entry.character);
+                    
+                    // Prevent event bubbling to document
+                    e.stopPropagation();
+                }
+            });
+        }
         
         // Add to initiative list
         initiativeList.appendChild(characterItem);
@@ -502,10 +592,13 @@ export function displayInitiativeOrder(sortedCharacterList) {
     
     // Make sure we also update the associated CSS
     updateInitiativeStyles();
+    
+    // Ensure proper layout height
+    ensureProperLayoutHeight();
 }
 
 /**
- * Update CSS styles for initiative display
+ * Update CSS styles for initiative display with enhanced defeated character styling
  */
 function updateInitiativeStyles() {
     // Check if the styles already exist
@@ -515,22 +608,34 @@ function updateInitiativeStyles() {
     const styleElement = document.createElement('style');
     styleElement.id = 'initiative-styles';
     
-    // Define improved styles
+    // Define improved styles including special styling for defeated characters
     styleElement.textContent = `
         .initiative-order {
             flex: 0 0 250px;
             min-width: 250px;
-            height: 100%;
-            max-height: none;
-            overflow-y: auto;
+            height: 100% !important; /* Force full height of parent */
             background-color: #fff;
             border-radius: 5px;
-            border: 1px solid #ddd;
+            border: 2px solid #3498db; /* Fancy blue border */
+            box-shadow: 0 0 10px rgba(52, 152, 219, 0.3), inset 0 0 5px rgba(52, 152, 219, 0.1);
             padding: 10px;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
-            align-self: stretch;
             display: flex;
             flex-direction: column;
+            position: relative; /* Needed for absolute positioning of children */
+            overflow: hidden; /* Hide overflow from container itself */
+            box-sizing: border-box; /* Include padding in height calculation */
+            min-height: 500px; /* Match minimum height of the battlefield */
+        }
+        
+        .initiative-order::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(to right, #3498db, #2ecc71, #3498db);
+            opacity: 0.7;
         }
         
         .initiative-order h3 {
@@ -541,21 +646,46 @@ function updateInitiativeStyles() {
             color: #444;
             border-bottom: 1px solid #eee;
             padding-bottom: 5px;
-            flex-shrink: 0;
+            flex-shrink: 0; /* Don't allow the header to shrink */
+            height: 35px; /* Fixed height for header */
+            box-sizing: border-box;
         }
         
         .initiative-list {
             display: flex;
             flex-direction: column;
-            gap: 5px;
+            gap: 8px;
             flex-grow: 1;
-            overflow-y: auto;
+            overflow-y: auto; /* This enables vertical scrolling */
             padding-right: 5px;
+            margin-right: -5px; /* Compensate for padding to align with header */
+            position: relative; /* Enable proper scrolling */
+            scrollbar-width: thin; /* For Firefox */
+            scrollbar-color: #3498db #f0f0f0; /* For Firefox */
+            height: calc(100% - 35px); /* Full height minus header height */
+            padding-bottom: 10px; /* Add padding at the bottom of the list */
+            box-sizing: border-box;
+        }
+        
+        /* Webkit scrollbar styling */
+        .initiative-list::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        .initiative-list::-webkit-scrollbar-track {
+            background: #f0f0f0;
+            border-radius: 3px;
+        }
+        
+        .initiative-list::-webkit-scrollbar-thumb {
+            background-color: #3498db;
+            border-radius: 3px;
         }
         
         .initiative-hp-section {
             margin-bottom: 5px;
             width: 100%;
+            flex-shrink: 0; /* Prevent compression */
         }
         
         .initiative-hp-container {
@@ -566,6 +696,7 @@ function updateInitiativeStyles() {
             border-radius: 4px;
             overflow: hidden;
             border: 1px solid #555;
+            flex-shrink: 0; /* Prevent compression */
         }
         
         .initiative-hp-bar {
@@ -590,19 +721,27 @@ function updateInitiativeStyles() {
             display: flex;
             align-items: center;
             width: 100%;
+            height: 30px; /* Fixed height for info container */
+            flex-shrink: 0; /* Prevent compression */
         }
         
         .initiative-item {
             padding: 8px;
-            margin-bottom: 5px;
+            margin-bottom: 0; /* Remove bottom margin to prevent unwanted gaps */
             background-color: #f5f5f5;
             border-radius: 4px;
             border: 1px solid #ddd;
             transition: all 0.2s ease;
             cursor: pointer;
+            height: auto; /* Allow height to be determined by content */
+            min-height: 65px; /* Ensure consistent minimum height for items */
+            flex-shrink: 0; /* Prevent compression when list gets long */
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
         }
         
-        .initiative-item:hover {
+        .initiative-item:hover:not(.defeated) {
             background-color: #e9e9e9;
             transform: translateY(-2px);
             box-shadow: 0 3px 5px rgba(0, 0, 0, 0.1);
@@ -617,8 +756,16 @@ function updateInitiativeStyles() {
         
         .initiative-item.defeated {
             opacity: 0.6;
-            text-decoration: line-through;
             background-color: #f0f0f0;
+            border-color: #ccc;
+            cursor: default;
+            transform: none;
+        }
+        
+        .initiative-item.defeated:hover {
+            background-color: #f0f0f0;
+            transform: none;
+            box-shadow: none;
         }
         
         .team-indicator {
@@ -626,6 +773,7 @@ function updateInitiativeStyles() {
             height: 26px;
             border-radius: 3px;
             margin-right: 8px;
+            flex-shrink: 0; /* Prevent compression */
         }
         
         .initiative-sprite {
@@ -633,18 +781,66 @@ function updateInitiativeStyles() {
             height: 24px;
             object-fit: contain;
             margin-right: 8px;
+            flex-shrink: 0; /* Prevent compression */
         }
         
         .initiative-name {
             flex: 1;
             font-weight: bold;
             font-size: 12px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         
         .initiative-roll {
             color: #777;
             font-size: 11px;
             margin-left: 4px;
+            flex-shrink: 0; /* Prevent compression */
+        }
+        
+        /* Initiative status icons */
+        .initiative-status-icons {
+            display: inline-flex;
+            margin-left: 5px;
+            position: relative;
+            top: 0;
+            transform: none;
+            gap: 2px;
+            height: 14px;
+        }
+        
+        .initiative-status-icons .status-effect-icon {
+            width: 14px;
+            height: 14px;
+            font-size: 8px;
+            line-height: 14px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+        }
+        
+        /* Empty state styling to show full container height */
+        .initiative-list::after {
+            content: '';
+            display: block;
+            min-height: 20px; /* Add some minimal spacing at the end */
+        }
+        
+        /* When list is empty, show a nice placeholder */
+        .initiative-list:empty::before {
+            content: 'Waiting for characters...';
+            display: block;
+            text-align: center;
+            color: #aaa;
+            font-style: italic;
+            padding: 20px 0;
+            border: 2px dashed #ddd;
+            border-radius: 5px;
+            margin: 20px 0;
         }
     `;
     
@@ -659,9 +855,8 @@ export async function updateInitiativeHP() {
     // Find all initiative items
     const initiativeItems = document.querySelectorAll('.initiative-item');
     
-    // Import to avoid circular dependency
-    const { getSortedCharacters } = await import('./initiative.js');
-    const sortedCharacters = getSortedCharacters();
+    // Get both character lists
+    const sortedCharactersDisplay = getSortedCharactersDisplay();
     
     // Get character positions for updating battlefield HP bars too
     const { getCharacterPositions } = await import('./characterPositions.js');
@@ -672,8 +867,8 @@ export async function updateInitiativeHP() {
         const characterId = item.dataset.character;
         if (!characterId) return;
         
-        // Find this character in the sortedCharacters array using uniqueId
-        const character = sortedCharacters.find(entry => entry.character.uniqueId === characterId);
+        // Find this character in the display list using uniqueId
+        const character = sortedCharactersDisplay.find(entry => entry.character.uniqueId === characterId);
         if (!character) return;
         
         // Get the HP container and bar
@@ -681,6 +876,9 @@ export async function updateInitiativeHP() {
         const hpBar = item.querySelector('.initiative-hp-bar');
         const hpText = item.querySelector('.initiative-hp-text');
         if (!hpContainer || !hpBar || !hpText) return;
+        
+        // Check if character is defeated
+        const isDefeated = character.isDefeated || character.character.isDefeated || character.character.currentKP <= 0;
         
         // Get current KP and make sure maxKP is set
         const currentKP = getCurrentKP(character.character);
@@ -706,8 +904,10 @@ export async function updateInitiativeHP() {
         // Update the HP text
         hpText.textContent = `${currentKP}/${maxKP}`;
         
-        // Update color based on HP percentage
-        if (hpPercent <= 25) {
+        // Update color based on HP percentage and defeat status
+        if (isDefeated) {
+            hpBar.style.backgroundColor = '#666'; // Gray for defeated
+        } else if (hpPercent <= 25) {
             hpBar.style.backgroundColor = '#e74c3c'; // Red for critical health
         } else if (hpPercent <= 50) {
             hpBar.style.backgroundColor = '#f39c12'; // Orange for half health
@@ -718,7 +918,8 @@ export async function updateInitiativeHP() {
 }
 
 /**
- * Mark a character as defeated in the initiative list
+ * Mark a character as defeated in the initiative list DISPLAY ONLY
+ * This function updates the visual appearance but doesn't remove the character
  * @param {string} characterId - UniqueId of the defeated character
  */
 export async function markDefeatedInInitiative(characterId) {
@@ -731,6 +932,7 @@ export async function markDefeatedInInitiative(characterId) {
         const hpBar = initiativeItem.querySelector('.initiative-hp-bar');
         if (hpBar) {
             hpBar.style.width = '0%';
+            hpBar.style.backgroundColor = '#666'; // Gray for defeated
         }
         
         // Update the text to show 0 HP
@@ -739,6 +941,31 @@ export async function markDefeatedInInitiative(characterId) {
             // Get max KP value
             const maxKP = await getMaxKP(characterId);
             hpText.textContent = `0/${maxKP}`;
+        }
+        
+        // Update team indicator color
+        const teamIndicator = initiativeItem.querySelector('.team-indicator');
+        if (teamIndicator) {
+            teamIndicator.style.backgroundColor = '#666';
+        }
+        
+        // Update character sprite appearance
+        const sprite = initiativeItem.querySelector('.initiative-sprite');
+        if (sprite) {
+            sprite.style.filter = 'grayscale(100%) opacity(0.7)';
+        }
+        
+        // Update character name appearance
+        const nameSpan = initiativeItem.querySelector('.initiative-name');
+        if (nameSpan) {
+            nameSpan.style.textDecoration = 'line-through';
+            nameSpan.style.color = '#666';
+        }
+        
+        // Update initiative roll appearance
+        const initiativeRoll = initiativeItem.querySelector('.initiative-roll');
+        if (initiativeRoll) {
+            initiativeRoll.style.color = '#666';
         }
     }
 }
@@ -749,11 +976,10 @@ export async function markDefeatedInInitiative(characterId) {
  * @returns {number} - Max KP value
  */
 async function getMaxKP(characterId) {
-    // Import to avoid circular dependency
-    const { getSortedCharacters } = await import('./initiative.js');
-    const sortedCharacters = getSortedCharacters();
+    // Get from display list
+    const sortedCharactersDisplay = getSortedCharactersDisplay();
     
-    const character = sortedCharacters.find(entry => entry.character.uniqueId === characterId);
+    const character = sortedCharactersDisplay.find(entry => entry.character.uniqueId === characterId);
     
     if (character && character.character.maxKP) {
         return character.character.maxKP;
@@ -783,48 +1009,206 @@ export function updateStatusIconsInInitiative(characterId) {
         existingStatusContainer.remove();
     }
     
-    // Get the character object to check for status effects
-    import('./initiative.js').then(module => {
-        const { getSortedCharacters } = module;
-        const sortedCharacters = getSortedCharacters();
+    // Get the character object to check for status effects from display list
+    const sortedCharactersDisplay = getSortedCharactersDisplay();
+    
+    // Find character by uniqueId in display list
+    const character = sortedCharactersDisplay.find(entry => entry.character.uniqueId === characterId);
+    if (!character || !character.character) return;
+    
+    // Don't show status effects for defeated characters
+    const isDefeated = character.isDefeated || character.character.isDefeated || character.character.currentKP <= 0;
+    if (isDefeated) return;
+    
+    // If character has status effects, create and add icons
+    if (character.character.statusEffects && character.character.statusEffects.length > 0) {
+        // Create status icons container
+        const statusIconsContainer = document.createElement('div');
+        statusIconsContainer.className = 'initiative-status-icons';
         
-        // Find character by uniqueId
-        const character = sortedCharacters.find(entry => entry.character.uniqueId === characterId);
-        if (!character || !character.character) return;
-        
-        // If character has status effects, create and add icons
-        if (character.character.statusEffects && character.character.statusEffects.length > 0) {
-            // Create status icons container
-            const statusIconsContainer = document.createElement('div');
-            statusIconsContainer.className = 'initiative-status-icons';
+        // Add each status effect icon
+        character.character.statusEffects.forEach(effect => {
+            const iconEl = document.createElement('div');
+            iconEl.className = `status-effect-icon ${effect.cssClass}`;
+            iconEl.title = `${effect.name}: ${effect.effect}`;
             
-            // Add each status effect icon
-            character.character.statusEffects.forEach(effect => {
-                const iconEl = document.createElement('div');
-                iconEl.className = `status-effect-icon ${effect.cssClass}`;
-                iconEl.title = `${effect.name}: ${effect.effect}`;
-                
-                // Special handling for certain status effects
-                if (effect.id === 'burned') {
-                    iconEl.innerHTML = '🔥';
-                    iconEl.style.fontSize = '8px';
-                    iconEl.style.color = 'yellow';
-                    iconEl.style.textShadow = '0 0 2px #ff0, 0 0 3px #ff0';
-                } else {
-                    iconEl.textContent = effect.htmlSymbol;
-                }
-                
-                statusIconsContainer.appendChild(iconEl);
-            });
-            
-            // Insert after the name but before the initiative roll
-            const nameSpan = nameContainer.querySelector('.initiative-name');
-            if (nameSpan) {
-                nameSpan.appendChild(statusIconsContainer);
+            // Special handling for certain status effects
+            if (effect.id === 'burned') {
+                iconEl.innerHTML = '🔥';
+                iconEl.style.fontSize = '8px';
+                iconEl.style.color = 'yellow';
+                iconEl.style.textShadow = '0 0 2px #ff0, 0 0 3px #ff0';
             } else {
-                // Fallback - add to the end of the container
-                nameContainer.appendChild(statusIconsContainer);
+                iconEl.textContent = effect.htmlSymbol;
+            }
+            
+            statusIconsContainer.appendChild(iconEl);
+        });
+        
+        // Insert after the name but before the initiative roll
+        const nameSpan = nameContainer.querySelector('.initiative-name');
+        if (nameSpan) {
+            nameSpan.appendChild(statusIconsContainer);
+        } else {
+            // Fallback - add to the end of the container
+            nameContainer.appendChild(statusIconsContainer);
+        }
+    }
+}
+
+/**
+ * Ensure the battlefield layout and initiative order have correct relative heights
+ */
+function ensureProperLayoutHeight() {
+    // Create style element with additional layout fixes
+    const layoutStyleElement = document.createElement('style');
+    layoutStyleElement.id = 'initiative-layout-fix';
+    
+    layoutStyleElement.textContent = `
+        /* Ensure battlefield layout has proper height */
+        .battlefield-layout {
+            display: flex;
+            gap: var(--spacing-lg);
+            height: calc(100vh - 200px);
+            min-height: 500px;
+            align-items: stretch; /* Important to stretch children */
+        }
+        
+        /* Ensure battlefield grid container has proper dimensions */
+        .battlefield-grid-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        /* This is to ensure the initiative order container matches the grid exactly */
+        @media (min-width: 768px) {
+            .battlefield-layout {
+                height: auto;
+                aspect-ratio: auto;
+            }
+            
+            .initiative-order {
+                height: 100% !important;
+                display: flex;
+                flex-direction: column;
             }
         }
-    });
+        
+        /* Explicitly make the main container height match grid container */
+        .battlefield-grid-container, .initiative-order {
+            height: calc(100vh - 240px) !important;
+            min-height: 500px !important;
+            max-height: calc(100vh - 240px) !important;
+        }
+        
+        /* Fix for Firefox and Safari height issues */
+        @supports (-moz-appearance:none) {
+            .initiative-order {
+                height: calc(100vh - 240px) !important;
+                min-height: 500px !important;
+                max-height: calc(100vh - 240px) !important;
+            }
+        }
+        
+        /* Fix for Safari */
+        @media not all and (min-resolution:.001dpcm) { 
+            @supports (-webkit-appearance:none) {
+                .initiative-order {
+                    height: calc(100vh - 240px) !important;
+                    min-height: 500px !important;
+                    max-height: calc(100vh - 240px) !important;
+                }
+            }
+        }
+    `;
+    
+    document.head.appendChild(layoutStyleElement);
+}
+
+/**
+ * Create trainer information element for tooltip
+ * @param {Object} character - Character data with teamIndex
+ * @returns {HTMLElement|null} - Trainer info element or null
+ */
+function createTrainerInfoElement(character) {
+    // Get team index from character or from sorted characters display
+    let teamIndex = character.teamIndex;
+    
+    // If teamIndex is not set, try to find it from the display list
+    if (teamIndex === undefined || teamIndex === null) {
+        const sortedCharactersDisplay = getSortedCharactersDisplay();
+        const characterEntry = sortedCharactersDisplay.find(entry => 
+            entry.character.uniqueId === character.uniqueId
+        );
+        if (characterEntry) {
+            teamIndex = characterEntry.teamIndex;
+        }
+    }
+    
+    // If we still can't determine the team index, return null
+    if (teamIndex === undefined || teamIndex === null) {
+        return null;
+    }
+    
+    // Get trainer data
+    const trainers = getTrainers();
+    if (!trainers || !trainers[teamIndex]) {
+        return null;
+    }
+    
+    const trainer = trainers[teamIndex];
+    const trainerClass = getTrainerClassById(trainer.class);
+    
+    // Create trainer info element
+    const trainerSection = document.createElement('div');
+    trainerSection.className = 'tooltip-trainer-section';
+    
+    // Trainer header
+    const trainerHeader = document.createElement('div');
+    trainerHeader.className = 'tooltip-trainer-header';
+    
+    // Trainer icon
+    const trainerIcon = document.createElement('img');
+    trainerIcon.src = `TrainerIcons/${trainer.icon}`;
+    trainerIcon.alt = 'Trainer Icon';
+    trainerIcon.className = 'tooltip-trainer-icon';
+    
+    // Trainer name and class
+    const trainerInfo = document.createElement('div');
+    trainerInfo.className = 'tooltip-trainer-info';
+    
+    const trainerName = document.createElement('div');
+    trainerName.className = 'tooltip-trainer-name';
+    trainerName.textContent = trainer.name;
+    
+    const trainerClassName = document.createElement('div');
+    trainerClassName.className = 'tooltip-trainer-class';
+    trainerClassName.textContent = trainerClass ? trainerClass.name : trainer.class;
+    
+    trainerInfo.appendChild(trainerName);
+    trainerInfo.appendChild(trainerClassName);
+    
+    trainerHeader.appendChild(trainerIcon);
+    trainerHeader.appendChild(trainerInfo);
+    trainerSection.appendChild(trainerHeader);
+    
+    // Trainer class description
+    if (trainerClass && trainerClass.description) {
+        const trainerDescription = document.createElement('div');
+        trainerDescription.className = 'tooltip-trainer-description';
+        trainerDescription.textContent = trainerClass.description;
+        trainerSection.appendChild(trainerDescription);
+    }
+    
+    // Add separator
+    const separator = document.createElement('div');
+    separator.className = 'tooltip-separator';
+    trainerSection.appendChild(separator);
+    
+    return trainerSection;
 }

@@ -2,7 +2,7 @@
  * Turn management system
  */
 import { logBattleEvent } from './battleLog.js';
-import { getSortedCharacters } from './initiative.js';
+import { getSortedCharacters, setSortedCharacters, getSortedCharactersDisplay, removeDefeatedFromLogic, markDefeatedInDisplay } from './initiative.js';
 import { getCharacterPositions, removeDefeatedCharacter } from './characterPositions.js';
 import { highlightActiveCharacter, unhighlightActiveCharacter } from './animationManager.js';
 import { findNearestEnemyInRange, getBestAttack, performAttack } from './attackSystem.js';
@@ -14,9 +14,15 @@ import { resetTakenTurnsTracker, markTurnTaken, getNextImmediateTurn } from './i
 import { animateStatBoost } from './animationManager.js';
 import { changeStatValue, getCurrentStage } from './statChanges.js';
 import { animateSchwerttanz } from './Attacken/schwerttanz.js';
+import { focusOnCharacter } from './cameraSystem.js';
+import { displayInitiativeOrder } from './initiativeDisplay.js';
+import { updatePokemonHPBar } from './pokemonOverlay.js';
 
 // Current turn counter
 let currentTurn = 0;
+
+// Flag to prevent multiple turn ends (which would then call multiple new turns)
+let currentTurnEnded = false;
 
 // Track immediate turn requests
 let pendingImmediateTurn = null;
@@ -65,6 +71,13 @@ export function checkBattleEnd() {
 }
 
 export function endTurn(activeCharacter) {
+    // Prevent multiple endTurn calls for the same turn
+    if (currentTurnEnded) {
+        console.warn('endTurn() called multiple times for the same turn - ignoring duplicate');
+        return;
+    }
+    currentTurnEnded = true;
+    
     // Mark this character as having taken its turn this round
     if (activeCharacter.character && activeCharacter.character.uniqueId) {
         markTurnTaken(activeCharacter.character.uniqueId);
@@ -100,11 +113,22 @@ export function endTurn(activeCharacter) {
             
             // Update HP display
             updateInitiativeHP();
+            updatePokemonHPBar(activeCharId, activeCharacter.character);
             
             // Check if character was defeated by status effects
             if (activeCharacter.character.currentKP <= 0) {
                 activeCharacter.character.currentKP = 0;
+                
+                // Remove from logic list and mark in display list
+                removeDefeatedFromLogic(activeCharacter.character.uniqueId);
+                markDefeatedInDisplay(activeCharacter.character.uniqueId);
+                
+                // Remove from battlefield
                 removeDefeatedCharacter(activeCharId);
+                
+                // Update the display to show the changes
+                displayInitiativeOrder(getSortedCharactersDisplay());
+                
                 logBattleEvent(`${activeCharacter.character.name} wurde besiegt!`);
             }
         }
@@ -116,8 +140,8 @@ export function endTurn(activeCharacter) {
     }
     
     // Check if we've reached turn 100
-    if (currentTurn >= 100) {
-        logBattleEvent(`<div class="log-turn-header">BATTLE ENDED AT TURN LIMIT!</div>`, true);
+    if (currentTurn >= 2000) {
+        logBattleEvent(`<div class="log-turn-header">TIMEOUT! DER KAMPF ENDET UNENTSCHIEDEN!</div>`, true);
         return; // End the battle
     }
     
@@ -125,10 +149,16 @@ export function endTurn(activeCharacter) {
     const immediateId = getNextImmediateTurn();
     if (immediateId) {
         pendingImmediateTurn = immediateId;
+        // Reset the turn ended flag and return - immediate turn will handle next scheduling
+        setTimeout(() => {
+            currentTurnEnded = false;
+        }, 10);
+        return;
     }
     
-    // Schedule next turn with a delay
+    // Only schedule next turn if no immediate turn is pending
     setTimeout(() => {
+        currentTurnEnded = false; // Reset flag before starting next turn
         turn();
     }, 50); // 50ms delay between turns
 }
@@ -148,12 +178,12 @@ export function triggerImmediateTurn(pokemonId) {
 export async function turn() {
     // Handle immediate turn if there is one pending
     if (pendingImmediateTurn) {
-        // Get the character that should take an immediate turn
-        const sortedCharacters = getSortedCharacters();
+        // Get the character that should take an immediate turn from logic list
+        const sortedCharactersLogic = getSortedCharacters();
         const characterPositions = getCharacterPositions();
         
         // Find the character with the pending immediate turn
-        const pendingCharacter = sortedCharacters.find(
+        const pendingCharacter = sortedCharactersLogic.find(
             entry => entry.character && entry.character.uniqueId === pendingImmediateTurn
         );
         
@@ -189,6 +219,12 @@ export async function turn() {
             
             // Highlight the active character
             highlightActiveCharacter(pendingCharId);
+            
+            // Focus camera on the active character and wait for it to complete
+            await focusOnCharacter(pendingCharId);
+            
+            // Add delay AFTER camera arrives at its location
+            await new Promise(resolve => setTimeout(resolve, 100));
             
             // Process status effects at start of turn
             const statusMessages = processStatusEffectsStart(pendingCharacter.character);
@@ -226,15 +262,30 @@ export async function turn() {
             return; // Exit to avoid processing a regular turn
         }
     }
+
+    // Get current character positions and use logic list for turn processing
+    const characterPositions = getCharacterPositions();
+    let sortedCharactersLogic = getSortedCharacters();
+    
+    // Check if any characters remain in logic list
+    if (sortedCharactersLogic.length === 0) {
+        logBattleEvent(`<div class="log-turn-header">DER KAMPF IST VORBEI - KEINE CHARAKTERE ÜBRIG!</div>`, true);
+        return;
+    }
     
     // Start of a new round logic
-    const sortedCharacters = getSortedCharacters();
-    if (currentTurn % sortedCharacters.length === 0) {
+    if (currentTurn % sortedCharactersLogic.length === 0) {
         // Reset taken turns tracker at the start of a new round
         resetTakenTurnsTracker();
         
-        // Clear all skipTurnThisRound flags
-        sortedCharacters.forEach(entry => {
+        // Clear all skipTurnThisRound flags from both logic and display lists
+        const sortedCharactersDisplay = getSortedCharactersDisplay();
+        sortedCharactersLogic.forEach(entry => {
+            if (entry.character) {
+                entry.character.skipTurnThisRound = false;
+            }
+        });
+        sortedCharactersDisplay.forEach(entry => {
             if (entry.character) {
                 entry.character.skipTurnThisRound = false;
             }
@@ -243,32 +294,30 @@ export async function turn() {
         logBattleEvent(`<div class="log-round-header">Neue Runde beginnt!</div>`, true);
     }
 
-    // Increment turn counter
+    // Increment turn counter ONLY when processing a real turn
     currentTurn++;
     
     // Check if battle is over
     const winningTeam = checkBattleEnd();
     if (winningTeam !== null) {
         const teamName = (winningTeam >= 0) ? `Team ${winningTeam + 1}` : "Niemand";
-        logBattleEvent(`<div class="log-turn-header">BATTLE ENDED! ${teamName} GEWINNT!</div>`, true);
+        logBattleEvent(`<div class="log-turn-header">KAMPF VORBEI! ${teamName} GEWINNT!</div>`, true);
         return;
     }
     
-    const characterPositions = getCharacterPositions();
+    // Calculate turn index based on the logic character list
+    let turnIndex = (currentTurn - 1) % sortedCharactersLogic.length;
+    let activeCharacter = sortedCharactersLogic[turnIndex];
     
-    // Calculate initial turn index
-    let turnIndex = (currentTurn - 1) % sortedCharacters.length;
-    let activeCharacter = sortedCharacters[turnIndex];
-    
-    // Skip defeated characters and those that should skip their turn
+    // Since we only have alive characters in the logic list, we shouldn't need to skip any
+    // But let's keep a safety check for characters that should skip their turn
     let charactersChecked = 0;
     let activeCharId = null;
     
-    while (charactersChecked < sortedCharacters.length) {
-        // Find the active character's ID using uniqueId instead of direct object comparison
+    while (charactersChecked < sortedCharactersLogic.length) {
+        // Find the active character's ID using uniqueId
         activeCharId = null;
         for (const charId in characterPositions) {
-            // Check if this position has a character with the matching uniqueId
             if (characterPositions[charId].character && 
                 activeCharacter.character && 
                 characterPositions[charId].character.uniqueId === activeCharacter.character.uniqueId) {
@@ -277,10 +326,7 @@ export async function turn() {
             }
         }
         
-        // Skip if:
-        // 1. Character not found
-        // 2. Character is defeated
-        // 3. Character should skip turn this round due to initiative changes
+        // Double-check: Skip if character is defeated or should skip turn
         if (!activeCharId || 
             characterPositions[activeCharId].isDefeated || 
             (activeCharacter.character && activeCharacter.character.skipTurnThisRound)) {
@@ -288,11 +334,11 @@ export async function turn() {
             // Clear the skip flag if we're skipping due to it
             if (activeCharacter.character && activeCharacter.character.skipTurnThisRound) {
                 activeCharacter.character.skipTurnThisRound = false;
-                // Silent skip - no log message
+                console.log(`${activeCharacter.character.name} skipped turn due to skipTurnThisRound flag`);
             }
             
-            turnIndex = (turnIndex + 1) % sortedCharacters.length;
-            activeCharacter = sortedCharacters[turnIndex];
+            turnIndex = (turnIndex + 1) % sortedCharactersLogic.length;
+            activeCharacter = sortedCharactersLogic[turnIndex];
             charactersChecked++;
         } else {
             // Found a valid character to take their turn
@@ -300,9 +346,9 @@ export async function turn() {
         }
     }
     
-    // If all characters are defeated or should be skipped, end the battle
-    if (charactersChecked >= sortedCharacters.length) {
-        logBattleEvent(`<div class="log-turn-header">DER KAMPF IST VORBEI!</div>`, true);
+    // If all characters should be skipped (shouldn't happen with our filtering), end battle
+    if (charactersChecked >= sortedCharactersLogic.length) {
+        logBattleEvent(`<div class="log-turn-header">DER KAMPF IST VORBEI - ALLE CHARAKTERE ÜBERSPRUNGEN!</div>`, true);
         return;
     }
     
@@ -326,6 +372,13 @@ export async function turn() {
     
     // Highlight the active character
     highlightActiveCharacter(activeCharId);
+    
+    // Focus camera on the active character
+    // Added camera focus for normal turns - AWAIT it to ensure camera movement completes
+    await focusOnCharacter(activeCharId);
+    
+    // Add delay AFTER camera arrives at its location
+    await new Promise(resolve => setTimeout(resolve, 100));
     
     // Process status effects at start of turn
     if (activeCharId) {

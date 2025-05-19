@@ -22,6 +22,7 @@ import { isValidSandwirbelTarget } from './Attacken/sandwirbel.js';
 import { wakeUpFromDamage } from './statusEffects.js';
 import { getCurrentStatValue } from './statChanges.js';
 import { removeDefeatedCharacter } from './characterPositions.js';
+import { updatePokemonHPBar } from './pokemonOverlay.js';
 import { 
     fireProjectile, 
     isLineOfSightBlockedByAlly, 
@@ -366,10 +367,19 @@ export async function getBestAttack(attacker, target, distance = null) {
  * @returns {Object} - Damage roll results with modified dice count
  */
 export function calculateDamage(selectedAttack, target, attacker) {
-    // Base damage from the attack
+        // Base damage from the attack
     let baseDamage = selectedAttack.damage;
     let originalBaseDamage = baseDamage; // Store original for debugging
     
+    if (originalBaseDamage === 0) {
+        return {
+            rolls: [0],
+            total: 0,
+            modifiedDiceCount: 0,
+            originalDiceCount: 0
+        };
+    }
+
     // Get attack category (Physical/Special)
     const category = selectedAttack.category || 'Physisch'; // Default to Physical if not set
     
@@ -863,6 +873,8 @@ export async function performAttack(attacker, target) {
                         const damageAmount = parseInt(damageRoll.total, 10);
                         target.character.currentKP = Math.max(0, oldKP - damageAmount);
                         
+                        updatePokemonHPBar(targetId, target.character);
+                        
                         //Wake up from damage
                         if (damageAmount > 0) {
                             const wokeUp = wakeUpFromDamage(target.character, damageAmount);
@@ -1063,6 +1075,11 @@ export async function performAttack(attacker, target) {
                             const damageAmount = parseInt(damageRoll.total, 10);
                             target.character.currentKP = Math.max(0, oldKP - damageAmount);
 
+                            updatePokemonHPBar(targetId, target.character);
+                            
+                            // Update HP bar immediately
+                            updatePokemonHPBar(targetId, target.character);
+
                             //Wake up from damage
                             if (damageAmount > 0) {
                                 const wokeUp = wakeUpFromDamage(target.character, damageAmount);
@@ -1076,6 +1093,8 @@ export async function performAttack(attacker, target) {
                                 const recoilDamage = Math.ceil(damageAmount * 0.5); // 50% rounded up
                                 const attackerOldKP = parseInt(getCurrentKP(attacker.character), 10);
                                 attacker.character.currentKP = Math.max(0, attackerOldKP - recoilDamage);
+                                
+                                updatePokemonHPBar(charId, attacker.character);
                                 
                                 // Log the recoil damage
                                 attackResult.log.push(`${attackerName} nimmt ${recoilDamage} Rückstoßschaden von Verzweifler!`);
@@ -1261,6 +1280,11 @@ export function getStatusEffectForAttackType(attackType, moveType) {
  * @returns {boolean} - Whether the attack is a critical hit
  */
 export function checkCriticalHit(attacker, attack, netSuccesses) {
+    // Status moves (dealing no damage) cannot be critical hits
+    if (!attack.damage || attack.damage === 0) {
+        return false;
+    }
+    
     // Default critThreshold is 4 if not set
     let threshold = attacker.critThreshold !== undefined ? attacker.critThreshold : 4;
     

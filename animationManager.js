@@ -1,9 +1,12 @@
 /**
- * Animation management for characters
+ * Animation management for characters - Updated for Pokemon overlay system
+ * Pokemon sprites are now in an overlay layer, not in individual tiles
  */
 
 import { getCharacterPositions, updateCharacterPosition } from './characterPositions.js';
 import { TILE_SIZE } from './config.js';
+import { focusOnCharacter, positionElementWithCamera } from './cameraSystem.js';
+import { getPokemonSprite, updatePokemonPosition, setPokemonSpriteState } from './pokemonOverlay.js';
 
 /**
  * Animate character movement one tile at a time
@@ -13,7 +16,6 @@ import { TILE_SIZE } from './config.js';
  * @param {Function} callback - Function to call when animation completes
  */
 export function animateCharacterMovement(charId, currentPosition, path, callback) {
-    // If path is empty or undefined, just call the callback
     if (!path || path.length === 0) {
         if (callback) callback();
         return;
@@ -21,7 +23,6 @@ export function animateCharacterMovement(charId, currentPosition, path, callback
     
     // Function to animate a single step
     function animateStep(stepIndex) {
-        // If we're done with all steps, call the callback
         if (stepIndex >= path.length) {
             if (callback) callback();
             return;
@@ -30,13 +31,13 @@ export function animateCharacterMovement(charId, currentPosition, path, callback
         // Get the next position
         const nextPos = path[stepIndex];
         
-        // Update character position visually
+        // Update character position (this updates both data and visual)
         updateCharacterPosition(charId, nextPos);
         
-        // Schedule the next step with a short delay
+        // Schedule the next step
         setTimeout(() => {
             animateStep(stepIndex + 1);
-        }, 150); // 150ms delay between steps
+        }, 150);
     }
     
     // Start the animation
@@ -44,21 +45,22 @@ export function animateCharacterMovement(charId, currentPosition, path, callback
 }
 
 /**
- * Animate character dodge movement by directly moving the original element
+ * Animate character dodge movement using the overlay system
  * @param {string} charId - Character ID
  * @param {Object} targetPos - Target position {x, y}
  * @param {Function} callback - Function to call when animation completes
  */
 export async function animateDodge(charId, targetPos, callback) {
-    // Import to avoid circular dependency
-    const { getCharacterPositions } = await import('./characterPositions.js');
-    const { TILE_SIZE } = await import('./config.js');
-    const { getTeamColor, getStrategyBorderStyle } = await import('./utils.js');
-    const { updateTileZIndex } = await import('./tileZIndexManager.js');
     const characterPositions = getCharacterPositions();
-    
     const charData = characterPositions[charId];
     if (!charData) {
+        if (callback) callback();
+        return;
+    }
+    
+    // Get the Pokemon sprite from the overlay
+    const sprite = getPokemonSprite(charId);
+    if (!sprite) {
         if (callback) callback();
         return;
     }
@@ -67,126 +69,54 @@ export async function animateDodge(charId, targetPos, callback) {
     const originalX = charData.x;
     const originalY = charData.y;
     
-    // Find the current tile
-    const currentTile = document.querySelector(`.battlefield-tile[data-x="${originalX}"][data-y="${originalY}"]`);
-    if (!currentTile) {
-        if (callback) callback();
-        return;
-    }
-
-    // Find the character element
-    const characterEl = currentTile.querySelector(`.battlefield-character[data-character-id="${charId}"]`);
-    if (!characterEl) {
-        if (callback) callback();
-        return;
-    }
-    
-    // Find the HP bar container if it exists
-    const hpBarContainer = currentTile.querySelector(`.character-hp-bar-container[data-character-id="${charId}"]`);
-    
-    // Get the battlefield element for positioning
-    const battlefieldElement = document.querySelector('.battlefield-grid');
-    if (!battlefieldElement) {
-        if (callback) callback();
-        return;
-    }
-    
-    // Calculate positions for animation
-    const battlefieldRect = battlefieldElement.getBoundingClientRect();
-    
-    // Set the character to absolute positioning relative to the document
-    // This allows us to move it freely during the animation
-    const charRect = characterEl.getBoundingClientRect();
-    
-    // Update z-index for the current tile IMMEDIATELY (Pokémon is leaving)
-    // This happens BEFORE removing the character from the DOM
-    updateTileZIndex(currentTile, false);
-    
-    // Create a wrapper for the character during animation
-    const animationWrapper = document.createElement('div');
-    animationWrapper.className = 'dodge-animation-wrapper';
-    animationWrapper.style.position = 'fixed'; // Fixed to viewport
-    animationWrapper.style.zIndex = '100';
-    animationWrapper.style.pointerEvents = 'none';
-    
-    // Calculate absolute start position
-    animationWrapper.style.left = `${charRect.left}px`;
-    animationWrapper.style.top = `${charRect.top}px`;
-    animationWrapper.style.width = `${charRect.width}px`;
-    animationWrapper.style.height = `${charRect.height}px`;
-    
-    // Calculate target position
-    const endX = battlefieldRect.left + (targetPos.x * TILE_SIZE) + (TILE_SIZE / 2) - (charRect.width / 2);
-    const endY = battlefieldRect.top + (targetPos.y * TILE_SIZE) + (TILE_SIZE / 2) - (charRect.height / 2);
-    
-    // Temporarily detach the character from the DOM
-    characterEl.remove();
-    currentTile.classList.remove('occupied');
-    
-    // If we have an HP bar, detach it too
-    if (hpBarContainer) {
-        hpBarContainer.remove();
-    }
-    
-    // Add dodge effect to character (will be automatically preserved)
-    characterEl.classList.add('dodging');
-    characterEl.style.filter = 'drop-shadow(0 0 3px rgba(0, 200, 255, 0.8))'; // Blue dodge effect
-    
-    // Add character to animation wrapper
-    animationWrapper.appendChild(characterEl);
-    
-    // Add animation wrapper to document
-    document.body.appendChild(animationWrapper);
-    
-    // Mark character as dodge-immune in data
+    // Mark character as dodging in data
     charData.isDodging = true;
     
-    // Define the animation properties
-    animationWrapper.style.transition = 'all 0.3s cubic-bezier(0.2, -0.3, 0.8, 1.3)';
+    // Add dodging visual effect
+    sprite.classList.add('dodging');
+    sprite.style.filter = 'drop-shadow(0 0 3px rgba(0, 200, 255, 0.8))';
     
-    // Get the new tile and increase its z-index IMMEDIATELY before the animation starts
-    const newTile = document.querySelector(`.battlefield-tile[data-x="${targetPos.x}"][data-y="${targetPos.y}"]`);
-    if (newTile) {
-        updateTileZIndex(newTile, true);
+    // Calculate pixel positions
+    const startPixelX = (originalX * TILE_SIZE) + (TILE_SIZE / 2);
+    const startPixelY = (originalY * TILE_SIZE) + (TILE_SIZE / 2);
+    const endPixelX = (targetPos.x * TILE_SIZE) + (TILE_SIZE / 2);
+    const endPixelY = (targetPos.y * TILE_SIZE) + (TILE_SIZE / 2);
+    
+    // Set up animation transition
+    sprite.style.transition = 'all 0.3s cubic-bezier(0.2, -0.3, 0.8, 1.3)';
+    
+    // Animate to target position
+    sprite.style.left = `${endPixelX}px`;
+    sprite.style.top = `${endPixelY}px`;
+    
+    // Update HP bar position to follow the sprite
+    if (sprite.updateHPBar) {
+        sprite.updateHPBar();
     }
-    
-    // Start animation after a frame
-    requestAnimationFrame(() => {
-        animationWrapper.style.left = `${endX}px`;
-        animationWrapper.style.top = `${endY}px`;
-    });
     
     // Wait for animation to complete
     setTimeout(() => {
-        // Remove animation class and effects
-        characterEl.classList.remove('dodging');
-        characterEl.style.filter = '';
-        
-        // Remove the character from the animation wrapper
-        characterEl.remove();
+        // Remove dodging effects
+        sprite.classList.remove('dodging');
+        sprite.style.filter = '';
+        sprite.style.transition = '';
         
         // Update position in data
         charData.x = targetPos.x;
         charData.y = targetPos.y;
         charData.isDodging = false;
         
-        // Place character on the new tile
-        if (newTile) {
-            // If we have an HP bar, add it to the new tile first
-            if (hpBarContainer) {
-                newTile.appendChild(hpBarContainer);
-            }
-            
-            // Add the character to the new tile
-            newTile.appendChild(characterEl);
-            newTile.classList.add('occupied');
+        // Update the sprite's stored grid position
+        sprite.dataset.gridX = targetPos.x;
+        sprite.dataset.gridY = targetPos.y;
+        
+        // Ensure HP bar position is correct after animation
+        if (sprite.updateHPBar) {
+            sprite.updateHPBar();
         }
         
-        // Remove the animation wrapper
-        animationWrapper.remove();
-        
         if (callback) callback();
-    }, 300); // 300ms for animation
+    }, 300);
 }
 
 /**
@@ -194,20 +124,17 @@ export async function animateDodge(charId, targetPos, callback) {
  * @param {string} charId - ID of the active character
  */
 export async function highlightActiveCharacter(charId) {
-    // Import to avoid circular dependency
-    const { getCharacterPositions } = await import('./characterPositions.js');
     const characterPositions = getCharacterPositions();
-    
-    // Find the character element in the battlefield
     const charPos = characterPositions[charId];
     if (!charPos) return;
     
-    const charElement = document.querySelector(`.battlefield-tile[data-x="${charPos.x}"][data-y="${charPos.y}"] .battlefield-character`);
-    if (charElement) {
-        charElement.classList.add('active');
+    // Get the Pokemon sprite from the overlay
+    const sprite = getPokemonSprite(charId);
+    if (sprite) {
+        setPokemonSpriteState(charId, 'active', true);
     }
     
-    // Also highlight in initiative list using uniqueId instead of name
+    // Also highlight in initiative list
     const characterUniqueId = charPos.character.uniqueId;
     const initiativeItem = document.querySelector(`.initiative-item[data-character="${characterUniqueId}"]`);
     if (initiativeItem) {
@@ -228,12 +155,13 @@ export async function highlightActiveCharacter(charId) {
  * Remove highlight from the active character
  */
 export function unhighlightActiveCharacter() {
-    const activeChar = document.querySelector('.battlefield-character.active');
-    if (activeChar) {
-        activeChar.classList.remove('active');
+    // Remove active state from all Pokemon sprites
+    const characterPositions = getCharacterPositions();
+    for (const charId in characterPositions) {
+        setPokemonSpriteState(charId, 'active', false);
     }
     
-    // NEW CODE: Also remove highlight from initiative list
+    // Remove highlight from initiative list
     const activeInitiativeItem = document.querySelector('.initiative-item.active');
     if (activeInitiativeItem) {
         activeInitiativeItem.classList.remove('active');
@@ -250,162 +178,103 @@ export function unhighlightActiveCharacter() {
  * @param {Function} callback - Function to call when animation completes
  */
 export async function animateMeleeAttack(attackerId, attackerPos, targetPos, attackerSize, targetSize, callback) {
-    // Import to avoid circular dependency
-    const { getCharacterPositions } = await import('./characterPositions.js');
-    const { TILE_SIZE } = await import('./config.js');
-    const characterPositions = getCharacterPositions();
+    const { getOccupiedTiles } = await import('./pokemonDistanceCalculator.js');
     
-    // Find the character element on the battlefield
-    const currentTile = document.querySelector(`.battlefield-tile[data-x="${attackerPos.x}"][data-y="${attackerPos.y}"]`);
-    if (!currentTile) {
-        if (callback) callback();
-        return;
-    }
-
-    // Find the character element
-    const characterEl = currentTile.querySelector(`.battlefield-character[data-character-id="${attackerId}"]`);
-    if (!characterEl) {
+    // Get the Pokemon sprite from the overlay
+    const sprite = getPokemonSprite(attackerId);
+    if (!sprite) {
         if (callback) callback();
         return;
     }
     
-    // Get the battlefield element for positioning
+    // Get the battlefield element for positioning context
     const battlefieldElement = document.querySelector('.battlefield-grid');
     if (!battlefieldElement) {
         if (callback) callback();
         return;
     }
     
-    // CHANGED: Create animation wrapper with position: absolute
-    const animationWrapper = document.createElement('div');
-    animationWrapper.className = 'melee-attack-animation-wrapper';
-    animationWrapper.style.position = 'absolute'; 
-    animationWrapper.style.zIndex = '100';
-    animationWrapper.style.pointerEvents = 'none';
+    // Calculate the centers of attacker and target based on occupied tiles
+    const attackerTiles = getOccupiedTiles(attackerPos);
+    const targetTiles = getOccupiedTiles(targetPos);
     
-    // Get character's current position and size
-    const charRect = characterEl.getBoundingClientRect();
+    // Calculate center of attacker's tiles
+    let attackerCenterX = 0, attackerCenterY = 0;
+    for (const tile of attackerTiles) {
+        attackerCenterX += tile.x;
+        attackerCenterY += tile.y;
+    }
+    attackerCenterX /= attackerTiles.length;
+    attackerCenterY /= attackerTiles.length;
     
-    // CHANGED: Calculate position relative to the battlefield, not the viewport
-    const battlefieldRect = battlefieldElement.getBoundingClientRect();
-    const relativeLeft = charRect.left - battlefieldRect.left;
-    const relativeTop = charRect.top - battlefieldRect.top;
+    // Calculate center of target's tiles
+    let targetCenterX = 0, targetCenterY = 0;
+    for (const tile of targetTiles) {
+        targetCenterX += tile.x;
+        targetCenterY += tile.y;
+    }
+    targetCenterX /= targetTiles.length;
+    targetCenterY /= targetTiles.length;
     
-    // Set starting position relative to the battlefield
-    animationWrapper.style.left = `${relativeLeft}px`;
-    animationWrapper.style.top = `${relativeTop}px`;
-    animationWrapper.style.width = `${charRect.width}px`;
-    animationWrapper.style.height = `${charRect.height}px`;
+    // Convert to pixel coordinates
+    const startPixelX = attackerCenterX * TILE_SIZE + TILE_SIZE / 2;
+    const startPixelY = attackerCenterY * TILE_SIZE + TILE_SIZE / 2;
+    const targetPixelX = targetCenterX * TILE_SIZE + TILE_SIZE / 2;
+    const targetPixelY = targetCenterY * TILE_SIZE + TILE_SIZE / 2;
     
-    // Calculate attack distance - half the size category of the smaller participant
-    const smallerSize = Math.min(attackerSize, targetSize);
-    const attackDistance = smallerSize / 2;
+    // Focus camera on the attacker
+    await focusOnCharacter(attackerId);
     
-    // Calculate center tiles for both attacker and target based on size
-    // For attacker - get center coordinate by calculating size radius
-    const attackerRadius = Math.floor(attackerSize / 2);
-    const attackerCenterX = attackerPos.x + attackerRadius * (attackerSize > 1 ? 0.5 : 0);
-    const attackerCenterY = attackerPos.y + attackerRadius * (attackerSize > 1 ? 0.5 : 0);
-    
-    // For target - get center coordinate by calculating size radius
-    const targetRadius = Math.floor(targetSize / 2);
-    const targetCenterX = targetPos.x + targetRadius * (targetSize > 1 ? 0.5 : 0);
-    const targetCenterY = targetPos.y + targetRadius * (targetSize > 1 ? 0.5 : 0);
-    
-    // Calculate vector from attacker's center to target's center
-    const dx = targetCenterX - attackerCenterX;
-    const dy = targetCenterY - attackerCenterY;
+    // Calculate movement vector
+    const dx = targetPixelX - startPixelX;
+    const dy = targetPixelY - startPixelY;
     const distance = Math.sqrt(dx * dx + dy * dy);
     
-    // Normalize direction vector
+    // Normalize direction
     const dirX = dx / distance;
     const dirY = dy / distance;
     
-    // Calculate attack position (move along the direction vector)
-    const attackPositionX = attackerCenterX + dirX * attackDistance;
-    const attackPositionY = attackerCenterY + dirY * attackDistance;
+    // Calculate attack distance (stop short of the target)
+    const attackDistance = Math.min(distance * 0.7, TILE_SIZE * (1 + (targetSize - 1) * 0.5));
     
-    // CHANGED: Calculate movement distance in pixels relative to the battlefield
-    const moveX = (attackPositionX - attackerPos.x) * TILE_SIZE;
-    const moveY = (attackPositionY - attackerPos.y) * TILE_SIZE;
+    // Calculate end position for attack
+    const endPixelX = startPixelX + dirX * attackDistance;
+    const endPixelY = startPixelY + dirY * attackDistance;
     
-    // Temporarily detach the character and add to animation wrapper
-    characterEl.remove();
-    currentTile.classList.remove('occupied');
+    // Add attacking state
+    setPokemonSpriteState(attackerId, 'attacking', true);
     
-    // Add attack effect to character
-    characterEl.classList.add('attacking');
+    // Set up animation
+    sprite.style.transition = 'all 0.2s cubic-bezier(0.2, 0.7, 0.4, 1.0)';
     
-    // Add character to animation wrapper
-    animationWrapper.appendChild(characterEl);
+    // Store original position
+    const originalLeft = sprite.style.left;
+    const originalTop = sprite.style.top;
     
-    // CHANGED: Add animation wrapper to the battlefield element instead of document body
-    battlefieldElement.appendChild(animationWrapper);
+    // Animate to attack position
+    sprite.style.left = `${endPixelX}px`;
+    sprite.style.top = `${endPixelY}px`;
     
-    // Define animation properties - lunge forward quickly with slight acceleration
-    animationWrapper.style.transition = 'all 0.2s cubic-bezier(0.2, 0.7, 0.4, 1.0)';
-    
-    // CHANGED: Set up safety cleanup in case animation is interrupted
-    const cleanupAnimation = () => {
-        // Only run if animation wrapper is still in the DOM
-        if (animationWrapper.parentNode) {
-            // Remove animation class
-            if (characterEl.parentNode === animationWrapper) {
-                characterEl.classList.remove('attacking');
-                characterEl.remove();
-                
-                // Place character back on the original tile
-                if (currentTile) {
-                    currentTile.appendChild(characterEl);
-                    currentTile.classList.add('occupied');
-                }
-            }
-            
-            // Remove the animation wrapper
-            animationWrapper.remove();
-        }
-    };
-    
-    // CHANGED: Add event listener for page navigation
-    window.addEventListener('beforeunload', cleanupAnimation);
-    
-    // Start animation after a frame - move to attack position
-    requestAnimationFrame(() => {
-        // CHANGED: Use transforms instead of left/top for better performance
-        animationWrapper.style.transform = `translate(${moveX}px, ${moveY}px)`;
-    });
-    
-    // Store animation timeouts so we can clear them if needed
-    let attackTimeout;
-    
-    // Wait for attack animation to complete
-    attackTimeout = setTimeout(() => {
-        // CHANGED APPROACH: Instead of animating back, directly return to original tile
-        // Remove animation class
-        characterEl.classList.remove('attacking');
+    // Set up cleanup timeout
+    const attackTimeout = setTimeout(() => {
+        // Remove attacking state
+        setPokemonSpriteState(attackerId, 'attacking', false);
         
-        // Remove character from animation wrapper
-        characterEl.remove();
+        // Return to original position immediately
+        sprite.style.transition = '';
+        sprite.style.left = originalLeft;
+        sprite.style.top = originalTop;
         
-        // Place character back on the original tile
-        currentTile.appendChild(characterEl);
-        currentTile.classList.add('occupied');
-        
-        // Remove the animation wrapper
-        animationWrapper.remove();
-        
-        // Clean up beforeunload listener
-        window.removeEventListener('beforeunload', cleanupAnimation);
-        
-        // Call the callback
         if (callback) callback();
-    }, 200); // Only wait for forward animation
+    }, 200);
     
-    // CHANGED: Add cleanup method to the animation wrapper for external access
-    animationWrapper.cleanup = () => {
+    // Store cleanup method for external access
+    sprite.meleeAttackCleanup = () => {
         clearTimeout(attackTimeout);
-        window.removeEventListener('beforeunload', cleanupAnimation);
-        cleanupAnimation();
+        setPokemonSpriteState(attackerId, 'attacking', false);
+        sprite.style.transition = '';
+        sprite.style.left = originalLeft;
+        sprite.style.top = originalTop;
         if (callback) callback();
     };
 }
@@ -417,7 +286,6 @@ export async function animateMeleeAttack(attackerId, attackerPos, targetPos, att
  * @param {Function} callback - Callback function when animation completes
  */
 export function animateStatBoost(charId, buffType, callback) {
-    // Find the character tile first
     const characterPositions = getCharacterPositions();
     const charPos = characterPositions[charId];
     
@@ -425,37 +293,26 @@ export function animateStatBoost(charId, buffType, callback) {
         if (callback) callback();
         return;
     }
-
-    // Store original position
-    const originalX = charPos.x;
-    const originalY = charPos.y;
     
-    // Find the current tile
-    const currentTile = document.querySelector(`.battlefield-tile[data-x="${charPos.x}"][data-y="${charPos.y}"]`);
-    if (!currentTile) {
-        if (callback) callback();
-        return;
-    }
-
-    // Find the character element
-    const characterEl = currentTile.querySelector(`.battlefield-character[data-character-id="${charId}"]`);
-    if (!characterEl) {
+    // Get the Pokemon sprite
+    const sprite = getPokemonSprite(charId);
+    if (!sprite) {
         if (callback) callback();
         return;
     }
     
-    // Find battlefield element
+    // Get battlefield element for overlay effects
     const battlefieldElement = document.querySelector('.battlefield-grid');
     if (!battlefieldElement) {
         if (callback) callback();
         return;
     }
     
-    // Calculate center position for effects
+    // Calculate pixel position for effects
     const posX = (charPos.x * TILE_SIZE) + (TILE_SIZE / 2);
     const posY = (charPos.y * TILE_SIZE) + (TILE_SIZE / 2);
     
-    // Create stat arrow animations if not already present
+    // Add stat boost CSS if not already present
     if (!document.getElementById('stat-boost-animations')) {
         const style = document.createElement('style');
         style.id = 'stat-boost-animations';
@@ -479,31 +336,13 @@ export function animateStatBoost(charId, buffType, callback) {
                 animation: stat-arrow-animation 1.5s forwards;
             }
             
-            .attack-boost .stat-arrow {
-                color: #e74c3c;
-                text-shadow: 0 0 5px rgba(231, 76, 60, 0.7);
-            }
-            
-            .attack-strong .stat-arrow {
-                color: #ff0000;
-                text-shadow: 0 0 8px rgba(255, 0, 0, 0.8);
-                font-size: 28px;
-            }
-            
-            .defense-boost .stat-arrow {
-                color: #3498db;
-                text-shadow: 0 0 5px rgba(52, 152, 219, 0.7);
-            }
-            
-            .speed-boost .stat-arrow {
-                color: #2ecc71;
-                text-shadow: 0 0 5px rgba(46, 204, 113, 0.7);
-            }
+            .attack-boost .stat-arrow { color: #e74c3c; text-shadow: 0 0 5px rgba(231, 76, 60, 0.7); }
+            .attack-strong .stat-arrow { color: #ff0000; text-shadow: 0 0 8px rgba(255, 0, 0, 0.8); font-size: 28px; }
+            .defense-boost .stat-arrow { color: #3498db; text-shadow: 0 0 5px rgba(52, 152, 219, 0.7); }
+            .speed-boost .stat-arrow { color: #2ecc71; text-shadow: 0 0 5px rgba(46, 204, 113, 0.7); }
             
             .stat-flash {
                 position: absolute;
-                width: 100%;
-                height: 100%;
                 border-radius: 50%;
                 z-index: 990;
                 animation: stat-flash 0.5s ease-in-out;
@@ -518,12 +357,13 @@ export function animateStatBoost(charId, buffType, callback) {
         document.head.appendChild(style);
     }
     
-    // Create arrow container
+    // Create arrow container (no camera scaling needed since it's positioned relative to battlefield)
     const arrowContainer = document.createElement('div');
-    arrowContainer.className = buffType;
+    arrowContainer.className = `${buffType}`;
     arrowContainer.style.position = 'absolute';
     arrowContainer.style.left = `${posX}px`;
     arrowContainer.style.top = `${posY - 20}px`;
+    arrowContainer.style.transform = 'translate(-50%, 0)';
     arrowContainer.style.width = `${TILE_SIZE}px`;
     arrowContainer.style.height = `${TILE_SIZE}px`;
     arrowContainer.style.zIndex = '2000';
@@ -532,10 +372,10 @@ export function animateStatBoost(charId, buffType, callback) {
     // Create arrow(s)
     const arrow = document.createElement('div');
     arrow.className = 'stat-arrow';
-    arrow.textContent = '▲'; // Unicode up arrow
+    arrow.textContent = '▲';
     arrowContainer.appendChild(arrow);
     
-    // Add second arrow for 2-stage boosts
+    // Add second arrow for strong boosts
     if (buffType === 'attack-strong') {
         const arrow2 = document.createElement('div');
         arrow2.className = 'stat-arrow';
@@ -544,16 +384,17 @@ export function animateStatBoost(charId, buffType, callback) {
         arrowContainer.appendChild(arrow2);
     }
     
-    // Add color flash based on buff type
+    // Create color flash (no camera scaling needed)
     const flash = document.createElement('div');
     flash.className = 'stat-flash';
+    flash.style.position = 'absolute';
     flash.style.left = `${posX}px`;
     flash.style.top = `${posY}px`;
+    flash.style.transform = 'translate(-50%, -50%)';
     flash.style.width = `${TILE_SIZE * 1.5}px`;
     flash.style.height = `${TILE_SIZE * 1.5}px`;
-    flash.style.transform = 'translate(-50%, -50%)';
     
-    // Set flash color based on buff type
+    // Set flash color
     if (buffType === 'attack' || buffType === 'attack-strong') {
         flash.style.backgroundColor = 'rgba(231, 76, 60, 0.3)';
     } else if (buffType === 'defense') {
@@ -566,16 +407,18 @@ export function animateStatBoost(charId, buffType, callback) {
     battlefieldElement.appendChild(arrowContainer);
     battlefieldElement.appendChild(flash);
     
-    // Define bounce animation sequence
-    // We'll move the Pokemon up and down slightly to create a bounce effect
-    // This sequence will be executed repeatedly
+    // Create bounce effect by temporarily moving the sprite
+    const originalX = charPos.x;
+    const originalY = charPos.y;
+    
+    // Define bounce sequence
     const bounceSequence = [
-        { dx: 0, dy: -1 }, // Move up
-        { dx: 0, dy: 0 },  // Back to center
-        { dx: 0, dy: -1 }, // Move up again
-        { dx: 0, dy: 0 },  // Back to center
-        { dx: 0, dy: -1 }, // Move up a third time
-        { dx: 0, dy: 0 },  // Return to original position
+        { dx: 0, dy: -1 }, // Up
+        { dx: 0, dy: 0 },  // Center
+        { dx: 0, dy: -1 }, // Up
+        { dx: 0, dy: 0 },  // Center
+        { dx: 0, dy: -1 }, // Up
+        { dx: 0, dy: 0 },  // Return
     ];
     
     // Execute bounce sequence
@@ -590,34 +433,28 @@ export function animateStatBoost(charId, buffType, callback) {
         const newX = originalX + move.dx;
         const newY = originalY + move.dy;
         
-        // Update character position using the character positioning system
-        updateCharacterPosition(charId, { x: newX, y: newY });
+        // Update visual position temporarily
+        updatePokemonPosition(charId, newX, newY);
         
         currentIndex++;
         
-        // If we've finished the sequence, make sure we're at the original position
+        // Ensure return to original position
         if (currentIndex >= bounceSequence.length) {
-            updateCharacterPosition(charId, { x: originalX, y: originalY });
+            updatePokemonPosition(charId, originalX, originalY);
         }
-    }, 150); // 150ms per movement for a smooth animation
+    }, 150);
     
-    // Clean up after animation completes
+    // Clean up after animation
     setTimeout(() => {
-        // Ensure character is back at original position
-        updateCharacterPosition(charId, { x: originalX, y: originalY });
+        // Ensure position is correct
+        updatePokemonPosition(charId, originalX, originalY);
         
         // Remove visual elements
-        if (arrowContainer.parentNode) {
-            arrowContainer.remove();
-        }
-        if (flash.parentNode) {
-            flash.remove();
-        }
+        if (arrowContainer.parentNode) arrowContainer.remove();
+        if (flash.parentNode) flash.remove();
         
-        // Clear interval as safety measure
         clearInterval(bounceInterval);
         
-        // Call callback
         if (callback) callback();
     }, 1000);
 }
@@ -628,13 +465,7 @@ export function animateStatBoost(charId, buffType, callback) {
  * @param {Function} callback - Function to call when animation completes
  */
 export function animateClawSlash(target, callback) {
-    // Find the target tile
-    const targetTile = document.querySelector(`.battlefield-tile[data-x="${target.x}"][data-y="${target.y}"]`);
-    if (!targetTile) {
-        if (callback) callback();
-        return;
-    }
-    
+    // This effect is independent of the Pokemon sprites, so it can remain largely unchanged
     // Find the battlefield grid for positioning
     const battlefieldGrid = document.querySelector('.battlefield-grid');
     if (!battlefieldGrid) {
@@ -642,23 +473,26 @@ export function animateClawSlash(target, callback) {
         return;
     }
     
-    // Create slash container
+    // Calculate the center position in pixels for the slash
+    const centerX = (target.x * TILE_SIZE) + (TILE_SIZE / 2);
+    const centerY = (target.y * TILE_SIZE) + (TILE_SIZE / 2);
+    
+    // Create slash container (no camera scaling needed)
     const slashContainer = document.createElement('div');
     slashContainer.className = 'claw-slash-container';
     slashContainer.style.position = 'absolute';
-    slashContainer.style.top = '0';
-    slashContainer.style.left = '0';
-    slashContainer.style.width = '100%';
-    slashContainer.style.height = '100%';
+    slashContainer.style.left = `${centerX}px`;
+    slashContainer.style.top = `${centerY}px`;
+    slashContainer.style.transform = 'translate(-50%, -50%)';
+    slashContainer.style.width = `${TILE_SIZE * 1.5}px`;
+    slashContainer.style.height = `${TILE_SIZE * 1.5}px`;
     slashContainer.style.pointerEvents = 'none';
-    slashContainer.style.zIndex = '2000'; // High z-index to appear above other elements
+    slashContainer.style.zIndex = '2000';
     
-    // Create claw slash elements (3 slashes for effect)
+    // Create claw slash elements
     for (let i = 0; i < 3; i++) {
         const slash = document.createElement('div');
         slash.className = 'claw-slash';
-        
-        // Position and style for each slash
         slash.style.position = 'absolute';
         slash.style.top = '50%';
         slash.style.left = '50%';
@@ -669,72 +503,36 @@ export function animateClawSlash(target, callback) {
         slash.style.borderRadius = '2px';
         slash.style.transformOrigin = 'left center';
         slash.style.transform = 'translate(-50%, -50%) rotate(0deg) scaleX(0)';
-        
-        // Set custom properties for animation
         slash.style.setProperty('--delay', `${i * 0.06}s`);
-        slash.style.setProperty('--angle', `${(i-1) * 25}deg`); // -25, 0, 25 degrees for more dramatic angles
-        
-        // Apply the animation
+        slash.style.setProperty('--angle', `${(i-1) * 25}deg`);
         slash.style.animation = `claw-slash-animation 0.5s var(--delay) forwards`;
         
         slashContainer.appendChild(slash);
     }
     
-    // Add to target tile
-    targetTile.appendChild(slashContainer);
-    
-    // Add the necessary CSS animation if not already in the document
+    // Add CSS if not present
     if (!document.getElementById('claw-slash-animation-style')) {
         const slashStyle = document.createElement('style');
         slashStyle.id = 'claw-slash-animation-style';
         slashStyle.textContent = `
             @keyframes claw-slash-animation {
-                0% {
-                    transform: translate(-50%, -50%) rotate(var(--angle)) scaleX(0);
-                    opacity: 0;
-                }
-                10% {
-                    transform: translate(-50%, -50%) rotate(var(--angle)) scaleX(0.1);
-                    opacity: 1;
-                }
-                70% {
-                    transform: translate(-50%, -50%) rotate(var(--angle)) scaleX(1);
-                    opacity: 0.8;
-                }
-                100% {
-                    transform: translate(-50%, -50%) rotate(var(--angle)) scaleX(1.2);
-                    opacity: 0;
-                }
-            }
-            
-            /* Add a blood red splash effect behind the slashes */
-            .claw-slash::before {
-                content: '';
-                position: absolute;
-                top: 50%;
-                left: 0;
-                width: 100%;
-                height: 200%;
-                background: radial-gradient(ellipse at left, rgba(255, 255, 255, 0.4) 0%, transparent 70%);
-                transform: translateY(-50%);
-                opacity: 0;
-                animation: splash-fade 0.5s var(--delay) forwards;
-            }
-            
-            @keyframes splash-fade {
-                0% { opacity: 0; }
-                30% { opacity: 0.8; }
-                100% { opacity: 0; }
+                0% { transform: translate(-50%, -50%) rotate(var(--angle)) scaleX(0); opacity: 0; }
+                10% { transform: translate(-50%, -50%) rotate(var(--angle)) scaleX(0.1); opacity: 1; }
+                70% { transform: translate(-50%, -50%) rotate(var(--angle)) scaleX(1); opacity: 0.8; }
+                100% { transform: translate(-50%, -50%) rotate(var(--angle)) scaleX(1.2); opacity: 0; }
             }
         `;
         document.head.appendChild(slashStyle);
     }
     
-    // Remove after animation completes
+    // Add to battlefield
+    battlefieldGrid.appendChild(slashContainer);
+    
+    // Remove after animation
     setTimeout(() => {
         if (slashContainer.parentNode) {
             slashContainer.remove();
         }
         if (callback) callback();
-    }, 600); // Slightly longer than animation to ensure completion
+    }, 600);
 }

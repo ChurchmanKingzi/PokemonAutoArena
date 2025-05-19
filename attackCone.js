@@ -19,9 +19,7 @@ const activeCones = new Map();
  * @param {string} id - Optional ID for this cone (default: generated)
  * @returns {HTMLElement} - The created cone element
  */
-export function createConeIndicator(attacker, target, range, angle = 45, attackType = 'default', id = null) {
-    console.log(`Creating cone indicator: angle=${angle}, range=${range}, type=${attackType}`);
-    
+export function createConeIndicator(attacker, target, range, angle = 45, attackType = 'default', id = null) {    
     // Generate ID if not provided
     const coneId = id || `cone-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     
@@ -36,6 +34,76 @@ export function createConeIndicator(attacker, target, range, angle = 45, attackT
         return null;
     }
     
+    // Calculate display range based on attacker's size category
+    let displayRange = range;
+    if (attacker.character) {
+        // Import and calculate size category
+        import('./pokemonSizeCalculator.js').then(module => {
+            // This is async, but we'll use the synchronous calculation below
+        }).catch(error => {
+            console.warn('Could not import pokemonSizeCalculator:', error);
+        });
+        
+        // For immediate use, calculate size category inline
+        let sizeCategory = 1;
+        
+        // Extract height and weight from different possible locations in the data
+        let height, weight;
+        
+        // Try to get height/weight from statsDetails first (most reliable source)
+        if (attacker.character.statsDetails) {
+            height = attacker.character.statsDetails.height;
+            weight = attacker.character.statsDetails.weight;
+        }
+        
+        // Fallback to direct properties if they exist
+        if (height === undefined) {
+            height = attacker.character.height || 0;
+        }
+        if (weight === undefined) {
+            weight = attacker.character.weight || 0;
+        }
+        
+        // Check if the Pokémon is Flying type
+        const isFlying = (attacker.character.pokemonTypes && 
+                         attacker.character.pokemonTypes.some(type => type.toLowerCase() === 'flying')) ||
+                         (attacker.character.pokemonTypesDe && 
+                         attacker.character.pokemonTypesDe.some(type => type.toLowerCase() === 'flug'));
+        
+        // Calculate BMI
+        const bmi = (height && height > 0) ? weight / (height * height) : 0;
+        
+        // Rule 1: Size increase based on height and BMI relationship
+        if (height >= 1.6) {
+            // Calculate how many 0.1m increments above 1.6m
+            const heightIncrements = Math.floor((height - 1.6) / 0.1);
+            // Calculate required BMI (decreases by 4 for each 0.1m above 1.6m)
+            const requiredBMI = Math.max(0, 30 - (heightIncrements * 4));
+            
+            // Check if BMI meets the requirement or if height is at least 2m
+            if (bmi >= requiredBMI || height >= 2) {
+                sizeCategory += 1;
+            }
+        }
+        
+        // Rule 2: Additional size increases based on height milestones
+        if (height >= 10) {
+            sizeCategory += 3; // +1 for each milestone: 4m, 6m, and 10m
+        } else if (height >= 6) {
+            sizeCategory += 2; // +1 for each milestone: 4m and 6m
+        } else if (height >= 4) {
+            sizeCategory += 1; // +1 for 4m milestone
+        }
+        
+        // Rule 3: Flying type size adjustment
+        if (isFlying && sizeCategory === 1 && height >= 1.5) {
+            sizeCategory += 1; // Representing wing span
+        }
+        
+        // Increase display range by 1 for each size category beyond 1
+        displayRange = range + Math.max(0, sizeCategory - 1);
+    }
+    
     // Calculate direction vector for rotation
     const dx = target.x - attacker.x;
     const dy = target.y - attacker.y;
@@ -46,13 +114,13 @@ export function createConeIndicator(attacker, target, range, angle = 45, attackT
     
     if (angle >= 360) {
         // CASE 1: 360 degrees - full circle
-        coneElement = createCircleIndicator(attacker, range, attackType, coneId);
+        coneElement = createCircleIndicator(attacker, displayRange, attackType, coneId);
     } else if (angle >= 180) {
         // CASE 2: 180-359 degrees - wide cone that requires special handling
-        coneElement = createWideConeIndicator(attacker, target, range, angle, attackType, coneId);
+        coneElement = createWideConeIndicator(attacker, target, displayRange, angle, attackType, coneId);
     } else {
         // CASE 3: <180 degrees - can use standard triangle cone
-        coneElement = createStandardConeIndicator(attacker, target, range, angle, attackType, coneId);
+        coneElement = createStandardConeIndicator(attacker, target, displayRange, angle, attackType, coneId);
     }
     
     // Store the attacker and target positions for later reference
@@ -69,13 +137,14 @@ export function createConeIndicator(attacker, target, range, angle = 45, attackT
         element: coneElement,
         attacker: attacker,
         targetDirection: target,
-        range: range,
+        range: displayRange, // Store the display range, not the actual range
         angle: angle,
         attackType: attackType,
         createdAt: Date.now()
     });
     
     // Also create tile highlights to show affected areas more clearly
+    // Use the original range for tile highlights, not the display range
     createTileHighlights(attacker, target, range, angle, attackType, coneId);
     
     return coneElement;

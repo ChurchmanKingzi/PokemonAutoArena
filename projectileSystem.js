@@ -6,6 +6,7 @@
 
 import { TILE_SIZE, GRID_SIZE } from './config.js';
 import { getCharacterPositions } from './characterPositions.js';
+import { followProjectile, stopFollowingProjectile, focusOnCharacter } from './cameraSystem.js';
 import { createDamageNumber } from './damageNumbers.js';
 import { rollDamageWithValue } from './diceRoller.js';
 import { updateInitiativeHP } from './initiativeDisplay.js';
@@ -19,6 +20,7 @@ import { addConeStyles, createConeIndicator, removeConeIndicator, isPositionInCo
 import { createSchlafpuder, addSchlafpuderStyles } from './Attacken/schlafpuder.js';
 import { createStachelspore, addStachelsporeStyles } from './Attacken/stachelspore.js';
 import { createSandwirbel, addSandwirbelStyles, isValidSandwirbelTarget } from './Attacken/sandwirbel.js';
+import { updatePokemonHPBar } from './pokemonOverlay.js';
 
 // Ensure styles are added at initialization
 addRankenhiebStyles();
@@ -198,6 +200,9 @@ class Projectile {
         
         // Create the visual element
         this.element = this.createVisualElement();
+
+        // Follow this projectile with the camera
+        followProjectile(this);
         
         // Add to active projectiles
         activeProjectiles.push(this);
@@ -263,27 +268,17 @@ class Projectile {
         element.dataset.creationTime = Date.now();
         
         // Find the battlefield for positioning
-        const battlefield = document.querySelector('.battlefield-grid') || 
-                            document.querySelector('.battlefield-container');
+        const battlefield = document.querySelector('.battlefield-grid');
         
         if (!battlefield) {
             console.error('Battlefield element not found for projectile positioning');
             return element;
         }
         
-        // Get the battlefield's position on the page
-        const battlefieldRect = battlefield.getBoundingClientRect();
-        const scrollX = window.scrollX || window.pageXOffset;
-        const scrollY = window.scrollY || window.pageYOffset;
-        
-        // Calculate absolute position including scroll and battlefield offset
-        const absoluteX = battlefieldRect.left + scrollX + this.x;
-        const absoluteY = battlefieldRect.top + scrollY + this.y;
-        
-        // Position the element
+        // Position the element relative to the battlefield, not the viewport
         element.style.position = 'absolute';
-        element.style.left = `${absoluteX}px`;
-        element.style.top = `${absoluteY}px`;
+        element.style.left = `${this.x}px`;
+        element.style.top = `${this.y}px`;
         
         // For rankenhieb (vine), create a special element that connects attacker and target
         if (this.type === 'rankenhieb') {
@@ -306,11 +301,12 @@ class Projectile {
         // Set z-index to ensure it's above the battlefield but below UI
         element.style.zIndex = '100';
         
-        // Add the element to the document body (for absolute positioning)
-        document.body.appendChild(element);
+        // Add the element to the battlefield instead of document.body
+        battlefield.appendChild(element);
         
         return element;
     }
+
 
     /**
      * Update the projectile's logical state (not DOM)
@@ -318,7 +314,7 @@ class Projectile {
      * @returns {boolean} - Whether the projectile should be kept (false if destroyed)
      */
     update(deltaTime) {
-        // If already marked as removed, stop updating
+        // If already marked as removed, stop updating immediately
         if (this.removed) return false;
         
         // Check age-based destruction for area effects first
@@ -391,7 +387,14 @@ class Projectile {
         if (collision) {
             // Handle the collision
             this.handleCollision(collision);
-            return false;
+            
+            // For non-area effects, destroy after handling collision
+            // This ensures proper cleanup while preventing multiple hits
+            if (!this.isAreaEffect()) {
+                this.destroy();
+                return false;
+            }
+            // Area effects continue processing
         }
         
         return true;
@@ -422,6 +425,9 @@ class Projectile {
      * @returns {Object|null} - Collided character data or null if no collision
      */
     checkCollisions() {
+        // If projectile is already marked as removed, don't check for collisions
+        if (this.removed) return null;
+        
         // Convert pixel position to grid coordinates
         const gridX = Math.floor(this.x / TILE_SIZE);
         const gridY = Math.floor(this.y / TILE_SIZE);
@@ -476,7 +482,6 @@ class Projectile {
     handleCollision(collision) {
         // Skip if character is already defeated
         if (collision.position.isDefeated) {
-            this.destroy();
             return;
         }
         
@@ -503,13 +508,6 @@ class Projectile {
         
         // Apply damage to the character
         this.applyDamage(collision, damageRoll);
-        
-        // For non-area effects, destroy the projectile after hitting
-        if (!this.isAreaEffect()) {
-            this.destroy();
-        } else {
-            // Area effects continue through targets
-        }
     }
     
     /**
@@ -527,7 +525,7 @@ class Projectile {
      * @param {Object} target - Target data
      * @param {number} damageValue - Pre-calculated damage value
      */
-    applyDamageWithValue(target, damageValue) {
+    async applyDamageWithValue(target, damageValue) {
         // Skip if character is already defeated
         if (target.character.currentKP <= 0) {
             return;
@@ -540,36 +538,11 @@ class Projectile {
         const oldKP = parseInt(target.character.currentKP, 10);
         target.character.currentKP = Math.max(0, oldKP - damageValue);
         
-        // Update HP bar visually
-        const targetTile = document.querySelector(`.battlefield-tile[data-x="${target.position.x}"][data-y="${target.position.y}"]`);
-        if (targetTile) {
-            const hpBar = targetTile.querySelector(`.character-hp-bar-container[data-character-id="${target.id}"] .character-hp-bar`);
-            if (hpBar) {
-                const maxHP = target.character.maxKP || target.character.combatStats.kp || 10;
-                const currentHP = target.character.currentKP;
-                const hpPercent = Math.max(0, Math.min(100, (currentHP / maxHP) * 100));
-                
-                // Update width to show current health percentage
-                hpBar.style.width = `${hpPercent}%`;
-                
-                // Update color based on remaining HP
-                if (currentHP <= 0) {
-                    // Character defeated
-                    hpBar.style.width = '0%';
-                    hpBar.style.backgroundColor = '#7f0000'; // Dark red for defeated
-                    
-                    // Mark character as defeated
-                    target.position.isDefeated = true;
-                    
-                    // Remove defeat message - let the main attack flow handle this
-                } else if (currentHP <= maxHP * 0.25) {
-                    hpBar.style.backgroundColor = '#e74c3c'; // Red for low HP
-                } else if (currentHP <= maxHP * 0.5) {
-                    hpBar.style.backgroundColor = '#f39c12'; // Orange for medium HP
-                } else {
-                    hpBar.style.backgroundColor = getTeamColor(target.teamIndex); // Team color for healthy
-                }
-            }
+        // Update HP bar immediately using the overlay system
+        try {
+            updatePokemonHPBar(target.id, target.character);
+        } catch (error) {
+            console.error('Failed to update HP bar:', error);
         }
         
         // Update initiative HP display
@@ -599,44 +572,27 @@ class Projectile {
             const oldKP = parseInt(target.character.currentKP, 10);
             target.character.currentKP = Math.max(0, oldKP - damageAmount);
             
-            // Update HP bar visually
-            const targetTile = document.querySelector(`.battlefield-tile[data-x="${target.position.x}"][data-y="${target.position.y}"]`);
-            if (targetTile) {
-                const hpBar = targetTile.querySelector(`.character-hp-bar-container[data-character-id="${target.id}"] .character-hp-bar`);
-                if (hpBar) {
-                    const maxHP = target.character.maxKP || target.character.combatStats.kp || 10;
-                    const currentHP = target.character.currentKP;
-                    const hpPercent = Math.max(0, Math.min(100, (currentHP / maxHP) * 100));
-                    
-                    // Update width to show current health percentage
-                    hpBar.style.width = `${hpPercent}%`;
-                    
-                    // Update color based on remaining HP
-                    if (currentHP <= 0) {
-                        // Character defeated
-                        hpBar.style.width = '0%';
-                        hpBar.style.backgroundColor = '#7f0000'; // Dark red for defeated
-                        
-                        // Mark character as defeated
-                        target.position.isDefeated = true;
-                        
-                        // Log defeat
-                        logBattleEvent(`${target.character.name} is defeated and leaves the battle!`);
-                        
-                        // Import and call the function to handle a defeated character
-                        import('./characterPositions.js').then(module => {
-                            module.removeDefeatedCharacter(target.id);
-                        }).catch(error => {
-                            console.error("Error importing module to handle defeated character:", error);
-                        });
-                    } else if (currentHP <= maxHP * 0.25) {
-                        hpBar.style.backgroundColor = '#e74c3c'; // Red for low HP
-                    } else if (currentHP <= maxHP * 0.5) {
-                        hpBar.style.backgroundColor = '#f39c12'; // Orange for medium HP
-                    } else {
-                        hpBar.style.backgroundColor = getTeamColor(target.teamIndex); // Team color for healthy
-                    }
-                }
+            // Update HP bar immediately using the overlay system
+            try {
+                updatePokemonHPBar(target.id, target.character);
+            } catch (error) {
+                console.error('Failed to update HP bar:', error);
+            }
+            
+            // Handle defeat logic
+            if (target.character.currentKP <= 0) {
+                // Mark character as defeated
+                target.position.isDefeated = true;
+                
+                // Log defeat
+                logBattleEvent(`${target.character.name} is defeated and leaves the battle!`);
+                
+                // Import and call the function to handle a defeated character
+                import('./characterPositions.js').then(module => {
+                    module.removeDefeatedCharacter(target.id);
+                }).catch(error => {
+                    console.error("Error importing module to handle defeated character:", error);
+                });
             }
         }
         
@@ -709,6 +665,23 @@ class Projectile {
                 }
             } catch (e) {
                 console.error("Failed emergency hiding of projectile:", e);
+            }
+        }
+
+        // Stop following this projectile
+        stopFollowingProjectile();
+        
+        // Refocus on attacker if they're still active
+        if (this.attacker && !this.attacker.isDefeated) {
+            // Find the attacker's character ID
+            const characterPositions = getCharacterPositions();
+            for (const charId in characterPositions) {
+                if (characterPositions[charId] === this.attacker) {
+                    setTimeout(() => {
+                        focusOnCharacter(charId);
+                    }, 100);
+                    break;
+                }
             }
         }
         
@@ -1483,17 +1456,16 @@ export function updateProjectiles(timestamp) {
         // Check for stale projectiles that might be frozen
         checkForStaleProjectiles(now);
         
-        // Get battlefield references for batch DOM updates
-        const battlefield = document.querySelector('.battlefield-grid') || 
-                            document.querySelector('.battlefield-container');
-        let battlefieldRect = null;
+        // Get battlefield for batch DOM updates
+        const battlefield = document.querySelector('.battlefield-grid');
         
-        if (battlefield) {
-            battlefieldRect = battlefield.getBoundingClientRect();
+        if (!battlefield) {
+            if (activeProjectiles.length > 0) {
+                requestAnimationFrame(updateProjectiles);
+            }
+            updateInProgress = false;
+            return;
         }
-        
-        const scrollX = window.scrollX || window.pageXOffset;
-        const scrollY = window.scrollY || window.pageYOffset;
         
         // Collect DOM updates to perform in batch
         const updates = [];
@@ -1516,17 +1488,17 @@ export function updateProjectiles(timestamp) {
                 }
                 
                 // For projectiles that are still active, queue a visual update
-                if (projectile.element && !projectile.removed && battlefieldRect) {
+                if (projectile.element && !projectile.removed) {
                     if (projectile.type === 'rankenhieb') {
                         // Vines don't move, so don't queue updates for them
                         continue;
                     }
                     
-                    // Queue DOM update
+                    // Queue DOM update (using battlefield coordinates)
                     updates.push({
                         element: projectile.element,
-                        x: battlefieldRect.left + scrollX + projectile.x,
-                        y: battlefieldRect.top + scrollY + projectile.y,
+                        x: projectile.x,
+                        y: projectile.y,
                         dirX: projectile.dirX,
                         dirY: projectile.dirY
                     });
@@ -1544,7 +1516,7 @@ export function updateProjectiles(timestamp) {
         // Now batch-apply all DOM updates
         updates.forEach(update => {
             try {
-                // Update position
+                // Update position directly (relative to the battlefield)
                 update.element.style.left = `${update.x}px`;
                 update.element.style.top = `${update.y}px`;
                 

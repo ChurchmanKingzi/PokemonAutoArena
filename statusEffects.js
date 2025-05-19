@@ -2,6 +2,7 @@
  * Status Effects System for Pokémon Battle Simulator
  */
 import { createDamageNumber } from './damageNumbers.js';
+import { updatePokemonHPBar } from './pokemonOverlay.js';
 
 // Define all status effects with their properties
 export const STATUS_EFFECTS = {
@@ -455,17 +456,22 @@ export function processStatusEffectsEnd(pokemon, position) {
                         pokemon.currentKP += healAmount;
                         messages.push(`${pokemon.name} wird durch Gift um ${healAmount} KP geheilt! (Aufheber)`);
                         
+                        // ADD HP BAR UPDATE FOR HEALING:
+                        updatePokemonHPBar (pokemon.uniqueId, pokemon);
+                        
                         // Show healing number if position is provided
                         if (position) {
                             createDamageNumber(healAmount, position, true, 'heal');
                         }
-                    } else {
-                        messages.push(`${pokemon.name} hat bereits volle KP und kann durch Aufheber nicht mehr geheilt werden.`);
                     }
                 } else {
                     // Normal poison damage
                     totalDamage += poisonDamage;
+                    pokemon.currentKP = Math.max(0, pokemon.currentKP - poisonDamage);
                     messages.push(`${pokemon.name} erleidet ${poisonDamage} Schaden durch Gift!`);
+                    
+                    // ADD HP BAR UPDATE FOR DAMAGE:
+                    updatePokemonHPBar (pokemon.uniqueId, pokemon);
                     
                     // Show damage number if position is provided
                     if (position) {
@@ -486,6 +492,9 @@ export function processStatusEffectsEnd(pokemon, position) {
                         pokemon.currentKP += healAmount;
                         messages.push(`${pokemon.name} wird durch schweres Gift um ${healAmount} KP geheilt! (Aufheber)`);
                         
+                        // ADD HP BAR UPDATE FOR HEALING:
+                        updatePokemonHPBar (pokemon.uniqueId, pokemon);
+                        
                         // Show healing number if position is provided
                         if (position) {
                             createDamageNumber(healAmount, position, true, 'heal');
@@ -497,6 +506,9 @@ export function processStatusEffectsEnd(pokemon, position) {
                     // Normal badly poisoned damage
                     totalDamage += badPoisonDamage;
                     messages.push(`${pokemon.name} erleidet ${badPoisonDamage} Schaden durch schweres Gift!`);
+                    
+                    // ADD HP BAR UPDATE FOR DAMAGE:
+                    updatePokemonHPBar (pokemon.uniqueId, pokemon);
                     
                     // Show damage number if position is provided
                     if (position) {
@@ -511,6 +523,9 @@ export function processStatusEffectsEnd(pokemon, position) {
                 const burnDamage = Math.max(1, Math.ceil(pokemon.maxKP / 8));
                 totalDamage += burnDamage;
                 messages.push(`${pokemon.name} erleidet ${burnDamage} Schaden durch Verbrennung!`);
+                    
+                // ADD HP BAR UPDATE FOR DAMAGE:
+                updatePokemonHPBar (pokemon.uniqueId, pokemon);
                 
                 // Show damage number if position is provided
                 if (position) {
@@ -522,6 +537,9 @@ export function processStatusEffectsEnd(pokemon, position) {
                 const curseDamage = Math.max(1, Math.floor(pokemon.maxKP / 4));
                 totalDamage += curseDamage;
                 messages.push(`${pokemon.name} erleidet ${curseDamage} Schaden durch den Fluch!`);
+                    
+                // ADD HP BAR UPDATE FOR DAMAGE:
+                updatePokemonHPBar (pokemon.uniqueId, pokemon);
                 
                 // Show damage number if position is provided
                 if (position) {
@@ -533,6 +551,9 @@ export function processStatusEffectsEnd(pokemon, position) {
                 const seedDamage = Math.max(1, Math.floor(pokemon.maxKP / 16));
                 totalDamage += seedDamage;
                 messages.push(`${pokemon.name} verliert ${seedDamage} KP durch Egelsamen!`);
+                    
+                // ADD HP BAR UPDATE FOR DAMAGE:
+                updatePokemonHPBar (pokemon.uniqueId, pokemon);
                 
                 // Show damage number if position is provided
                 if (position) {
@@ -567,6 +588,9 @@ export function processStatusEffectsEnd(pokemon, position) {
                 const holdDamage = Math.max(1, Math.floor(pokemon.maxKP / 16));
                 totalDamage += holdDamage;
                 messages.push(`${pokemon.name} erleidet ${holdDamage} Schaden durch Festhalten!`);
+                    
+                // ADD HP BAR UPDATE FOR DAMAGE:
+                updatePokemonHPBar (pokemon.uniqueId, pokemon);
                 
                 // Show damage number if position is provided
                 if (position) {

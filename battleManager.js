@@ -1,20 +1,21 @@
-/**
- * Main battle controller
- */
-
 import { logBattleEvent, createBattleLog, resetBattleLog } from './battleLog.js';
 import { displayInitiativeOrder } from './initiativeDisplay.js';
 import { updateBattlefieldDisplay } from './battlefieldGrid.js';
 import { rollInitiativeAndSort } from './initiative.js';
-import { placeCharacters, defineTeamAreas, setCharacterPositions } from './characterPositions.js';
+import { 
+    placeCharacters, 
+    setCharacterPositions,
+    getCharacterPositions,
+    defineTeamAreasWithScaling // Import new scaling function
+} from './characterPositions.js';
 import { turn, resetTurn } from './turnSystem.js';
 import { initializeTerrainSystem } from './terrainSystem.js';
 import { resetSwimmingRegistry } from './terrainEffects.js';
-import { getCharacterPositions } from './characterPositions.js';
+import { initializeCamera, startInitialCameraSequence, resetCamera } from './cameraSystem.js';
+import { initializeMinimapSystem, cleanupMinimapSystem } from './minimapSystem.js';
 
 /**
- * Main battle function that runs when entering the Arena
- * @param {Array} teamAssignments - The team assignments from characterauswahl.js
+ * Updated battle function to initialize both initiative lists
  */
 export function battle(teamAssignments) {
     console.log("Battle started!");
@@ -47,7 +48,9 @@ export function battle(teamAssignments) {
                     teamIndex: teamIndex,
                     characterIndex: characterIndex,
                     // Initialize with zero, will be updated after rolling
-                    initiativeRoll: 0
+                    initiativeRoll: 0,
+                    // Initialize defeated status
+                    isDefeated: false
                 };
                 
                 characterList.push(charEntry);
@@ -56,17 +59,33 @@ export function battle(teamAssignments) {
         });
     });
     
-    // Define team areas based on number of teams
-    const teamAreas = defineTeamAreas(teamAssignments.length);
+    // Define team areas based on number of teams AND team sizes
+    // Use the new function that scales team areas based on team composition
+    const initialTeamAreas = defineTeamAreasWithScaling(teamAssignments.length, teamCharacters);
     
-    // Initialize terrain system
-    initializeTerrainSystem(teamAreas);
+    // Initialize terrain system with initial team areas
+    initializeTerrainSystem(initialTeamAreas);
     
-    // Place characters in their team areas
-    const characterPositions = placeCharacters(teamCharacters, teamAreas);
+    // Place characters in their team areas - get back potentially resized team areas
+    const placementResult = placeCharacters(teamCharacters, initialTeamAreas);
+    const characterPositions = placementResult.positions;
+    const finalTeamAreas = placementResult.teamAreas;
+    
+    // If we only get positions back (for backward compatibility), use the initial team areas
+    const teamAreas = finalTeamAreas || initialTeamAreas;
+    
+    // Store the character positions globally
+    setCharacterPositions(characterPositions);
     
     // Update the battlefield display - replace team display with grid
+    // Pass the final team areas to ensure the display matches the actual areas used
     updateBattlefieldDisplay(teamAreas, characterPositions, teamAssignments.length);
+    
+    // Initialize camera system
+    initializeCamera();
+    
+    // Initialize minimap system after the battlefield is created
+    initializeMinimapSystem();
     
     // Add the battle log to the battlefield
     const battlefieldContent = document.querySelector('.battlefield-content');
@@ -76,24 +95,28 @@ export function battle(teamAssignments) {
     }
     
     // Welcome message
-    logBattleEvent("Battle simulation started! Rolling initiative...");
+    logBattleEvent("Der Kampf beginnt!");
     
-    // Roll initiative and sort characters
+    // Roll initiative and sort characters - this now sets up both logic and display lists
     const sortedCharacters = rollInitiativeAndSort(characterList);
     
-    // Display the initiative order in the Arena
+    // Display the initiative order in the Arena - this will now use the display list
     displayInitiativeOrder(sortedCharacters);
     
-    // Log who goes first
-    if (sortedCharacters.length > 0) {
-        const firstCharacter = sortedCharacters[0];
-        logBattleEvent(`${firstCharacter.character.name} will have the first turn!`);
-    }
-    
-    // Start the first turn
-    setTimeout(() => {
-        turn();
-    }, 100); // 0.1 second delay before starting
+    // Start the initial camera sequence, then begin the first turn
+    // Pass the FINAL team areas to the camera
+    startInitialCameraSequence(teamAreas).then(() => {
+        // Log who goes first
+        if (sortedCharacters.length > 0) {
+            const firstCharacter = sortedCharacters[0];
+            logBattleEvent(`${firstCharacter.character.name} will have the first turn!`);
+        }
+        
+        // Start the first turn
+        setTimeout(() => {
+            turn();
+        }, 100);
+    });
     
     return sortedCharacters;
 }
@@ -145,6 +168,12 @@ export function resetBattle() {
     
     // Reset battle log
     resetBattleLog();
+
+    // Reset camera
+    resetCamera();
+    
+    // Clean up minimap system
+    cleanupMinimapSystem();
     
     // Reset swimming registry
     resetSwimmingRegistry();

@@ -1,5 +1,6 @@
 /**
  * Movement range calculations with multi-tile Pokémon support
+ * Updated to work with the Pokemon overlay system
  */
 
 import { GRID_SIZE } from './config.js';
@@ -8,6 +9,10 @@ import { TERRAIN_TYPES } from './terrainGenerator.js';
 import { getTerrainAt, getMountainMovementCost, getLavaWeightMultiplier, getSnowWeightMultiplier, getSwampWeightMultiplier } from './terrainEffects.js';
 import { hasStatusEffect } from './statusEffects.js';
 import { getSnowMovementCost } from './terrainEffects.js';
+import { focusOnCharacter } from './cameraSystem.js';
+import { setPokemonSpriteState } from './pokemonOverlay.js';
+
+let callbackExecuted = false;
 
 /**
  * Get the pathfinding weight for a terrain type
@@ -233,15 +238,35 @@ export function findAllReachablePositions(startX, startY, movementPoints, charac
 
 /**
  * Process movement with terrain checks
+ * Updated to work with the Pokemon overlay system
  * @param {string} charId - Character ID
  * @param {Object} charData - Character data with position
  * @param {Array} path - Path to follow
  * @param {Function} callback - Function to call when movement is complete
  */
 export function processMovementWithTerrainChecks(charId, charData, path, callback) {
+    // IMPORTANT: Callback guard to prevent multiple executions
+    let callbackExecuted = false;
+    
+    // Wrap the original callback in a safe version
+    const safeCallback = (...args) => {
+        if (callbackExecuted) {
+            console.warn(`Movement callback for ${charId} called multiple times - ignoring duplicate`);
+            return;
+        }
+        callbackExecuted = true;
+        if (callback) {
+            try {
+                callback(...args);
+            } catch (error) {
+                console.error(`Error in movement callback for ${charId}:`, error);
+            }
+        }
+    };
+    
     // No path to follow
     if (!path || path.length === 0) {
-        if (callback) callback();
+        safeCallback();
         return;
     }
     
@@ -252,7 +277,7 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
     // Store the original position in case of a terrain failure
     const startingPosition = { x: currentX, y: currentY };
     
-    // Import needed modules - we'll use Promise.all to ensure everything is loaded before starting
+    // Import needed modules
     Promise.all([
         import('./characterPositions.js'),
         import('./terrainEffects.js'),
@@ -261,8 +286,8 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
         import('./damageNumbers.js'),
         import('./initiativeDisplay.js'),
         import('./turnSystem.js'),
-        import('./tileZIndexManager.js'),
-        import('./statusEffects.js')
+        import('./statusEffects.js'),
+        import('./cameraSystem.js')
     ]).then(([
         characterPositions, 
         terrainEffects,
@@ -271,8 +296,8 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
         damageNumbers,
         initiativeDisplay,
         turnSystem,
-        tileZIndexManager,
-        statusEffects
+        statusEffects,
+        cameraSystem
     ]) => {
         const { getTerrainAt, applyLavaEffect, applySnowEffect } = terrainEffects;
         const { logBattleEvent } = battleLog;
@@ -280,24 +305,14 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
         const { createDamageNumber } = damageNumbers;
         const { updateInitiativeHP } = initiativeDisplay;
         const { getCurrentTurn } = turnSystem;
-        const { updateTileZIndex } = tileZIndexManager;
         const { addStatusEffect, hasStatusEffect } = statusEffects;
-        
-        // Track the last terrain type to only check when entering a new type
-        const lastTerrainType = getTerrainAt(currentX, currentY);
-        
-        // Get the starting tile immediately and update its z-index
-        const startingTile = document.querySelector(`.battlefield-tile[data-x="${currentX}"][data-y="${currentY}"]`);
-        if (startingTile) {
-            // Reset z-index for the starting tile immediately since the Pokémon is leaving
-            updateTileZIndex(startingTile, false);
-        }
+        const { focusOnCharacter } = cameraSystem;
         
         // Function to process each step in the path
         async function processStep(stepIndex) {
             // If we're done with all steps, call the callback
             if (stepIndex >= path.length) {
-                if (callback) callback();
+                safeCallback();
                 return;
             }
             
@@ -307,19 +322,13 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
             // Check if the tile is still valid (might have been occupied since path was calculated)
             if (characterPositions.isTileOccupied(nextPos.x, nextPos.y, charId)) {
                 logBattleEvent(`${character.name} kann sich nicht weiterbewegen - der Weg ist blockiert.`);
-                if (callback) callback();
+                safeCallback();
                 return;
             }
             
             // Get current and next terrain types
             const currentTerrainType = getTerrainAt(currentX, currentY);
             const nextTerrainType = getTerrainAt(nextPos.x, nextPos.y);
-            
-            // Get the next tile and increase its z-index immediately BEFORE the character moves there
-            const nextTile = document.querySelector(`.battlefield-tile[data-x="${nextPos.x}"][data-y="${nextPos.y}"]`);
-            if (nextTile) {
-                updateTileZIndex(nextTile, true);
-            }
             
             // Special handling for water terrain - check when entering water
             if (nextTerrainType === 'water' && 
@@ -332,6 +341,9 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                     // Move the character onto the water tile
                     characterPositions.updateCharacterPosition(charId, nextPos);
                     
+                    // Focus camera on the moving character
+                    focusOnCharacter(charId, 150);
+                    
                     // Update position tracking
                     charData.x = nextPos.x;
                     charData.y = nextPos.y;
@@ -340,13 +352,6 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                     
                     // Continue with the next step
                     setTimeout(() => {
-                        if (stepIndex + 1 < path.length) {
-                            const currentTile = document.querySelector(`.battlefield-tile[data-x="${currentX}"][data-y="${currentY}"]`);
-                            if (currentTile) {
-                                updateTileZIndex(currentTile, false);
-                            }
-                        }
-                        
                         processStep(stepIndex + 1);
                     }, 150);
                     return;
@@ -359,6 +364,9 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                     // Move the character onto the water tile
                     characterPositions.updateCharacterPosition(charId, nextPos);
                     
+                    // Focus camera on the moving character
+                    focusOnCharacter(charId, 150);
+                    
                     // Update position tracking
                     charData.x = nextPos.x;
                     charData.y = nextPos.y;
@@ -367,19 +375,12 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                     
                     // Continue with the next step
                     setTimeout(() => {
-                        if (stepIndex + 1 < path.length) {
-                            const currentTile = document.querySelector(`.battlefield-tile[data-x="${currentX}"][data-y="${currentY}"]`);
-                            if (currentTile) {
-                                updateTileZIndex(currentTile, false);
-                            }
-                        }
-                        
                         processStep(stepIndex + 1);
                     }, 150);
                     return;
                 }
                 
-                // NEW: Non-swimming, non-flying Pokemon - take damage and continue movement
+                // Non-swimming, non-flying Pokemon - take damage and continue movement
                 // Roll 1d6 damage
                 const damageRoll = rollD6();
                 
@@ -399,6 +400,9 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                 // Move the character onto the water tile regardless of damage
                 characterPositions.updateCharacterPosition(charId, nextPos);
                 
+                // Focus camera on the moving character
+                focusOnCharacter(charId, 150);
+                
                 // Update position tracking
                 charData.x = nextPos.x;
                 charData.y = nextPos.y;
@@ -413,24 +417,17 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                     characterPositions.removeDefeatedCharacter(charId);
                     
                     // End movement
-                    if (callback) callback();
+                    safeCallback();
                     return;
                 }
                 
                 // Continue movement
                 setTimeout(() => {
-                    if (stepIndex + 1 < path.length) {
-                        const currentTile = document.querySelector(`.battlefield-tile[data-x="${currentX}"][data-y="${currentY}"]`);
-                        if (currentTile) {
-                            updateTileZIndex(currentTile, false);
-                        }
-                    }
-                    
                     processStep(stepIndex + 1);
                 }, 150);
                 return;
             } 
-            // Mountain terrain handling - no more climbing check
+            // Mountain terrain handling
             else if (nextTerrainType === 'mountain' && nextTerrainType !== currentTerrainType) {
                 // Get the movement cost based on Pokemon type
                 const mountainCost = terrainEffects.getMountainMovementCost(character);
@@ -452,8 +449,11 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                 // Log the message
                 logBattleEvent(message);
                 
-                // Continue with normal movement - the path calculation already took the movement cost into account
+                // Continue with normal movement
                 characterPositions.updateCharacterPosition(charId, nextPos);
+                
+                // Focus camera on the moving character
+                focusOnCharacter(charId, 150);
                 
                 // Update position tracking
                 charData.x = nextPos.x;
@@ -466,7 +466,7 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                 // Sand: just inform the player about the terrain
                 logBattleEvent(`${character.name} betritt sandiges Gelände.`);
             }
-            // SNOW terrain handling - modified to apply on ANY step on snow, not just when entering from other terrain
+            // SNOW terrain handling
             else if (nextTerrainType === 'snow') {
                 // Get the movement cost based on Pokemon type
                 const snowCost = terrainEffects.getSnowMovementCost(character);
@@ -478,6 +478,9 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                     // Move the character onto the snow tile
                     characterPositions.updateCharacterPosition(charId, nextPos);
                     
+                    // Focus camera on the moving character
+                    focusOnCharacter(charId, 150);
+                    
                     // Update position tracking
                     charData.x = nextPos.x;
                     charData.y = nextPos.y;
@@ -486,13 +489,6 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                     
                     // Continue with the next step
                     setTimeout(() => {
-                        if (stepIndex + 1 < path.length) {
-                            const currentTile = document.querySelector(`.battlefield-tile[data-x="${currentX}"][data-y="${currentY}"]`);
-                            if (currentTile) {
-                                updateTileZIndex(currentTile, false);
-                            }
-                        }
-                        
                         processStep(stepIndex + 1);
                     }, 150);
                     return;
@@ -504,9 +500,11 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                     return typeName === 'ice' || typeName === 'fire';
                 });
                 
-                // First, allow the Pokemon to move onto the snow tile regardless of what happens next
-                // Update character position visually
+                // First, allow the Pokemon to move onto the snow tile
                 characterPositions.updateCharacterPosition(charId, nextPos);
+                
+                // Focus camera on the moving character
+                focusOnCharacter(charId, 150);
                 
                 // Update position tracking
                 charData.x = nextPos.x;
@@ -533,13 +531,6 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                     
                     // Continue movement for immune Pokemon
                     setTimeout(() => {
-                        if (stepIndex + 1 < path.length) {
-                            const currentTile = document.querySelector(`.battlefield-tile[data-x="${currentX}"][data-y="${currentY}"]`);
-                            if (currentTile) {
-                                updateTileZIndex(currentTile, false);
-                            }
-                        }
-                        
                         processStep(stepIndex + 1);
                     }, 150);
                 } else {
@@ -556,32 +547,22 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                         // Log the effect message
                         logBattleEvent(snowEffect.message);
                         
-                        // Add the frozen visual effect to the character
-                        const characterEl = document.querySelector(`.battlefield-character[data-character-id="${charId}"]`);
-                        if (characterEl) {
-                            characterEl.classList.add('frozen-effect');
-                        }
+                        // Add the frozen visual effect to the Pokemon sprite
+                        setPokemonSpriteState(charId, 'frozen-effect', true);
                         
                         // IMPORTANT: End movement immediately after this step if frozen
-                        if (callback) callback();
+                        safeCallback();
                         return; // Stop further movement processing
                     }
                     
                     // Continue movement if not frozen
                     setTimeout(() => {
-                        if (stepIndex + 1 < path.length) {
-                            const currentTile = document.querySelector(`.battlefield-tile[data-x="${currentX}"][data-y="${currentY}"]`);
-                            if (currentTile) {
-                                updateTileZIndex(currentTile, false);
-                            }
-                        }
-                        
                         processStep(stepIndex + 1);
                     }, 150);
                 }
                 return; // Make sure to return in all cases
             }
-            // SWAMP: Special handling for swamp terrain - apply poison status to non-immune Pokemon
+            // SWAMP: Special handling for swamp terrain
             else if (nextTerrainType === 'swamp' && nextTerrainType !== currentTerrainType) {
                 // Flying Pokemon ignore swamp effects
                 if (character.terrainAttributes && character.terrainAttributes.fliegend) {
@@ -625,24 +606,34 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                 
                 // Continue with normal movement
                 characterPositions.updateCharacterPosition(charId, nextPos);
+                
+                // Focus camera on the moving character
+                focusOnCharacter(charId, 150);
+                
                 charData.x = nextPos.x;
                 charData.y = nextPos.y;
                 currentX = nextPos.x;
                 currentY = nextPos.y;
             }
             
-            // Update character position visually
-            characterPositions.updateCharacterPosition(charId, nextPos);
+            // Update character position visually (for non-special terrain)
+            if (!['water', 'mountain', 'sand', 'snow', 'swamp', 'lava'].includes(nextTerrainType) ||
+                (nextTerrainType === currentTerrainType && nextTerrainType !== 'snow')) {
+                characterPositions.updateCharacterPosition(charId, nextPos);
+                
+                // Focus camera on the moving character
+                focusOnCharacter(charId, 150);
+                
+                // Update current position
+                currentX = nextPos.x;
+                currentY = nextPos.y;
+                
+                // Update character data
+                charData.x = nextPos.x;
+                charData.y = nextPos.y;
+            }
             
-            // Update current position
-            currentX = nextPos.x;
-            currentY = nextPos.y;
-            
-            // Update character data
-            charData.x = nextPos.x;
-            charData.y = nextPos.y;
-            
-            // LAVA: Special handling for lava terrain - NEW VERSION WITH BURN STATUS
+            // LAVA: Special handling for lava terrain
             if (nextTerrainType === 'lava') {
                 // Flying Pokemon ignore lava effects
                 if (character.terrainAttributes && character.terrainAttributes.fliegend) {
@@ -650,19 +641,16 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                     
                     // Update position and continue movement
                     characterPositions.updateCharacterPosition(charId, nextPos);
+                    
+                    // Focus camera on the moving character
+                    focusOnCharacter(charId, 150);
+                    
                     charData.x = nextPos.x;
                     charData.y = nextPos.y;
                     currentX = nextPos.x;
                     currentY = nextPos.y;
                     
                     setTimeout(() => {
-                        if (stepIndex + 1 < path.length) {
-                            const currentTile = document.querySelector(`.battlefield-tile[data-x="${currentX}"][data-y="${currentY}"]`);
-                            if (currentTile) {
-                                updateTileZIndex(currentTile, false);
-                            }
-                        }
-                        
                         processStep(stepIndex + 1);
                     }, 150);
                     return;
@@ -678,19 +666,16 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                     
                     // Update position and continue movement
                     characterPositions.updateCharacterPosition(charId, nextPos);
+                    
+                    // Focus camera on the moving character
+                    focusOnCharacter(charId, 150);
+                    
                     charData.x = nextPos.x;
                     charData.y = nextPos.y;
                     currentX = nextPos.x;
                     currentY = nextPos.y;
                     
                     setTimeout(() => {
-                        if (stepIndex + 1 < path.length) {
-                            const currentTile = document.querySelector(`.battlefield-tile[data-x="${currentX}"][data-y="${currentY}"]`);
-                            if (currentTile) {
-                                updateTileZIndex(currentTile, false);
-                            }
-                        }
-                        
                         processStep(stepIndex + 1);
                     }, 150);
                     return;
@@ -704,19 +689,16 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                 
                 // Update position and continue movement
                 characterPositions.updateCharacterPosition(charId, nextPos);
+                
+                // Focus camera on the moving character
+                focusOnCharacter(charId, 150);
+                
                 charData.x = nextPos.x;
                 charData.y = nextPos.y;
                 currentX = nextPos.x;
                 currentY = nextPos.y;
                 
                 setTimeout(() => {
-                    if (stepIndex + 1 < path.length) {
-                        const currentTile = document.querySelector(`.battlefield-tile[data-x="${currentX}"][data-y="${currentY}"]`);
-                        if (currentTile) {
-                            updateTileZIndex(currentTile, false);
-                        }
-                    }
-                    
                     processStep(stepIndex + 1);
                 }, 150);
                 return;
@@ -724,15 +706,6 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
             
             // Schedule the next step with a short delay
             setTimeout(() => {
-                // If there are more steps, update z-index of the current tile
-                if (stepIndex + 1 < path.length) {
-                    const currentTile = document.querySelector(`.battlefield-tile[data-x="${currentX}"][data-y="${currentY}"]`);
-                    if (currentTile) {
-                        // The Pokémon is immediately leaving this tile again
-                        updateTileZIndex(currentTile, false);
-                    }
-                }
-                
                 processStep(stepIndex + 1);
             }, 150); // 150ms delay between steps
         }
@@ -741,6 +714,6 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
         processStep(0);
     }).catch(error => {
         console.error("Error loading modules for movement processing:", error);
-        if (callback) callback();
+        safeCallback();
     });
 }
