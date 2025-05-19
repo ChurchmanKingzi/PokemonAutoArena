@@ -69,38 +69,28 @@ export function getTrainerClassDescription(classId) {
 }
 
 /**
- * Get available trainer icons by fetching from server
- * @returns {Promise<Array>} - Promise that resolves to array of trainer icon filenames
+ * Static version - Get available trainer icons without server
+ * @returns {Array} - Array of trainer icon filenames
  */
 export async function getAvailableTrainerIcons() {
-    try {
-        // Updated to match the new API endpoint
-        const response = await fetch('/api/trainer-icons');
-        
-        if (!response.ok) {
-            throw new Error(`Failed to fetch trainer icons: ${response.status} ${response.statusText}`);
-        }
-        
-        const icons = await response.json();
-        
-        // Ensure we return an array
-        if (!Array.isArray(icons)) {
-            throw new Error('Server returned invalid data format');
-        }
-        
-        console.log(`Successfully loaded ${icons.length} trainer icons from server`);
-        return icons.sort(); // Sort alphabetically
-        
-    } catch (error) {
-        console.warn('Could not fetch trainer icons dynamically, using fallback:', error);
-        
-        // Fallback to default icons if server request fails
-        const fallbackIcons = [];
-        for (let i = 1; i <= 12; i++) {
-            fallbackIcons.push(`trainer${i}.png`);
-        }
-        
-        console.log(`Using fallback icons: ${fallbackIcons.length} icons available`);
-        return fallbackIcons.sort();
-    }
+    const existingIcons = [
+        'Ash.png',
+        'Blue.png',
+        'Diamond.png',
+        'Gold.png',
+        'Green.png',
+        'Green.png',
+        'Krys.png',
+        'Max.png',
+        'Misty.png',
+        'Platinum.png',
+        'Red.png',
+        'Rocko.png',
+        'Ruby.png',
+        'Sapphire.png',
+        'Silver.png'
+    ];
+    
+    console.log(`Found ${existingIcons.length} trainer icons`);
+    return existingIcons.sort();
 }
