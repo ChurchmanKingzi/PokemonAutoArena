@@ -3,7 +3,7 @@
  * Modified to respect multi-tile Pokémon
  */
 
-import { GRID_SIZE, TEAM_AREA_WIDTH, TEAM_AREA_HEIGHT } from './config.js';
+import { GRID_SIZE } from './config.js';
 import { shuffleArray } from './utils.js';
 import { calculateSizeCategory } from './pokemonSizeCalculator.js';
 import { isPathValidForPokemon, doesPokemonOccupyTile } from './pokemonDistanceCalculator.js';
@@ -332,16 +332,9 @@ export function placeCharacters(teamCharacters, teamAreas) {
                 
                 if (!positionFound) {
                     success = false;
-                    console.log(`Failed to place Pokémon ${charEntry.character.name} in team ${teamIndex} (size ${sizeCategory})`);
                 }
             });
         });
-        
-        if (success) {
-            console.log(`Successfully placed all Pokémon on attempt ${attempt + 1}`);
-        } else if (attempt < maxAttempts - 1) {
-            console.log(`Failed to place all Pokémon on attempt ${attempt + 1}, trying with larger team areas...`);
-        }
     }
     
     if (!success) {
@@ -421,6 +414,9 @@ export async function removeDefeatedCharacter(charId) {
         } catch (error) {
             console.error("Error updating initiative display:", error);
         }
+
+        //Remove HP Bar and status icons
+        removePokemonFromOverlay(charId);
     }
     
     // 4. Mark as defeated in character positions
@@ -465,8 +461,6 @@ export async function removeDefeatedCharacter(charId) {
             }
         }, 1000);
     }
-    
-    console.log(`Character ${character?.name || charId} has been defeated and removed from battle`);
 }
 
 /**
@@ -525,9 +519,7 @@ export function initializeImprovedBattlefield(teamCharacters) {
 export function initializeTerrainWithTeamAreas(teamAreas) {
     // Get the current battlefield configuration
     const config = getBattlefieldConfig();
-    
-    console.log("Initializing terrain system with config:", config);
-    
+        
     // Generate terrain based on the selected scenario, using the resized team areas
     const terrainGrid = generateTerrain(
         config.scenario,
@@ -543,8 +535,7 @@ export function initializeTerrainWithTeamAreas(teamAreas) {
             }
         }
     }
-    console.log(`Generated terrain with ${mountainCount} mountain tiles`);
-    
+        
     // Store the generated grid in the terrainGenerator's state
     setTerrainGrid(terrainGrid);
     

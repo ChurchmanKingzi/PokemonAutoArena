@@ -4,8 +4,10 @@
 
 import { getTeamAssignments, areAllTeamsFilled, getTrainers } from './teamManager.js';
 import { getTeamColor } from './charakterAuswahlUtils.js';
-import { battle, resetBattle } from './battleManager.js';
+import { battle } from './battleManager.js';
 import { getTrainerClassById } from './classService.js';
+import { storeBattleStateForReset, resetBattleToOriginal } from './battleResetHelper.js';
+import { resetBattle } from './resetSystem.js';
 
 /**
  * Handle fight button click
@@ -47,21 +49,79 @@ function buildArena() {
     backButtonContainer.className = 'back-button-container';
     backButtonContainer.style.textAlign = 'center';
     backButtonContainer.style.marginBottom = '20px';
-    
+
     const backButton = document.createElement('button');
     backButton.className = 'back-button';
     backButton.textContent = 'Zurück zum Team-Builder';
-    backButton.addEventListener('click', () => {
-        // Reset the battle state completely
-        resetBattle();
+    backButton.addEventListener('click', async () => {
+        // Disable the button while processing to prevent multiple clicks
+        backButton.disabled = true;
+        backButton.textContent = 'Wird zurückgesetzt...';
         
-        // Hide combat area
-        combatArea.style.display = 'none';
-        
-        // Show character selection
-        document.querySelector('.character-selection').style.display = 'block';
+        try {
+            // First: Reset angler-caught Pokemon (remove them from battle)
+            await resetBattleToOriginal();
+            
+            // Show loading indicator
+            const loadingIndicator = document.createElement('div');
+            loadingIndicator.className = 'reset-loading-indicator';
+            loadingIndicator.innerHTML = `
+                <div style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+                            background-color: rgba(0,0,0,0.5); z-index: 9999; display: flex; 
+                            justify-content: center; align-items: center;">
+                    <div style="background-color: white; padding: 20px; border-radius: 5px; text-align: center;">
+                        <div style="width: 40px; height: 40px; border: 5px solid #f3f3f3; 
+                                    border-top: 5px solid #3498db; border-radius: 50%; 
+                                    margin: 0 auto 15px auto; animation: spin 2s linear infinite;"></div>
+                        <div>Zurücksetzen der Kampfarena...</div>
+                    </div>
+                </div>
+                <style>
+                    @keyframes spin {
+                        0% { transform: rotate(0deg); }
+                        100% { transform: rotate(360deg); }
+                    }
+                </style>
+            `;
+            document.body.appendChild(loadingIndicator);
+            
+            // Allow UI to update before starting reset
+            await new Promise(resolve => setTimeout(resolve, 50));
+            
+            // THEN: Reset the battle state completely using our comprehensive reset
+            await resetBattle();
+            
+            // Remove loading indicator
+            document.body.removeChild(loadingIndicator);
+            
+            // Hide combat area
+            combatArea.style.display = 'none';
+            
+            // Show character selection
+            document.querySelector('.character-selection').style.display = 'block';
+            
+        } catch (error) {
+            console.error('Error during battle reset:', error);
+            
+            // Display error message
+            const errorDiv = document.createElement('div');
+            errorDiv.style.color = 'red';
+            errorDiv.style.textAlign = 'center';
+            errorDiv.style.margin = '10px 0';
+            errorDiv.textContent = 'Fehler beim Zurücksetzen. Bitte Seite neu laden.';
+            backButtonContainer.appendChild(errorDiv);
+            
+            // Fallback: still try to reset normally
+            resetBattle();
+            combatArea.style.display = 'none';
+            document.querySelector('.character-selection').style.display = 'block';
+            
+            // Enable button again
+            backButton.disabled = false;
+            backButton.textContent = 'Zurück zum Team-Builder';
+        }
     });
-    
+
     backButtonContainer.appendChild(backButton);
     combatArea.appendChild(backButtonContainer);
     
@@ -218,6 +278,13 @@ function startBattle(teamAssignments, trainers = []) {
     if (typeof window.battle === 'function') {
         // Pass the enhanced teams and trainers to the battle function
         window.battle(enhancedTeams, trainers);
+        
+        // IMPORTANT: Store the original battle state AFTER battle initialization
+        // This ensures we capture the state after all Pokemon are placed but before any angler effects
+        setTimeout(() => {
+            storeBattleStateForReset();
+        }, 100); // Small delay to ensure battle is fully initialized
+        
     } else {
         console.error('Battle function not found!');
     }

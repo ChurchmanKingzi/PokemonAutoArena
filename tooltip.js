@@ -3,7 +3,7 @@
  * Includes support for modified stat display
  */
 
-import { getCurrentStatValue, getStatValueDisplay, hasStatModifications, getModifiedStatsHTML } from './statChanges.js';
+import { getStatValueDisplay } from './statChanges.js';
 
 // Global tooltip state management
 let activeTooltip = null;

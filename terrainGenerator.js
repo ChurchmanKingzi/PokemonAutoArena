@@ -504,17 +504,12 @@ function createPath(start, end) {
  * @param {Array} teamAreas - Array of team starting areas
  * @returns {Array} - The generated terrain grid
  */
-export function generateTerrain(scenario, teamAreas = []) {
-    console.log(`Generating terrain with scenario: ${scenario}`);
-    
+export function generateTerrain(scenario, teamAreas = []) {    
     // Initialize the grid with grass
     initializeTerrainGrid();
     
     // Generate terrain based on scenario
     switch(scenario.toLowerCase()) {
-        case 'ebene':
-            generateEbeneTerrain();
-            break;
         case 'see':
             generateSeeTerrain(teamAreas);
             break;
@@ -540,22 +535,13 @@ export function generateTerrain(scenario, teamAreas = []) {
             generateEiswuesteTerrain(teamAreas);
             break;
         default:
-            // Default to ebene
-            generateEbeneTerrain();
+            // Default to nothing
     }
     
     // Ensure team areas are appropriate for the scenario
     ensureTeamAreasCorrectTerrain(teamAreas, scenario);
     
     return terrainGrid;
-}
-
-/**
- * Generate Ebene (Plain) terrain - everything is grass
- */
-function generateEbeneTerrain() {
-    // Already initialized with grass, so nothing to do
-    console.log("Generated Ebene terrain");
 }
 
 /**
@@ -569,8 +555,6 @@ function generateSeeTerrain(teamAreas) {
     // Generate 1-10 rivers from the lake to the edges
     const numRivers = 1 + Math.floor(Math.random() * 10);
     generateRivers(lakeTiles, numRivers, numRivers, teamAreas);
-    
-    console.log(`Generated See terrain with ${numRivers} rivers`);
 }
 
 /**
@@ -617,8 +601,6 @@ function generateWusteTerrain(teamAreas) {
             }
         }
     }
-    
-    console.log(`Generated Wüste terrain with ${numOases} oases`);
 }
 
 /**
@@ -717,8 +699,6 @@ function generateMeerTerrain(teamAreas) {
             }
         }
     }
-    
-    console.log(`Generated Meer terrain with ${numExtraIslands} extra islands`);
 }
 
 /**
@@ -818,8 +798,6 @@ function generateVulkanTerrain(teamAreas) {
             }
         }
     }
-    
-    console.log(`Generated Vulkan terrain with ${numLavaRivers} lava rivers`);
 }
 
 /**
@@ -844,8 +822,6 @@ function generateGebirgeTerrain(teamAreas) {
     
     // Create paths between team areas
     createPathsBetweenTeamAreas(teamAreas);
-    
-    console.log("Generated Gebirge terrain");
 }
 
 /**
@@ -1098,8 +1074,6 @@ function generateZufallsmixTerrain(teamAreas) {
     
     // Ensure team areas are appropriate
     ensureTeamAreasAreGrass(teamAreas);
-    
-    console.log("Generated Zufallsmix terrain");
 }
 
 /**
@@ -1244,8 +1218,6 @@ function generateSumpfTerrain(teamAreas) {
     
     // Ensure team areas are grass
     ensureTeamAreasAreGrass(teamAreas);
-    
-    console.log("Generated Sumpf terrain");
 }
 
 /**
@@ -1337,6 +1309,4 @@ function generateEiswuesteTerrain(teamAreas) {
     // Ensure team areas are appropriate for the scenario
     // For Eiswüste, team areas should be snow
     ensureTeamAreasCorrectTerrain(teamAreas, "eiswueste");
-    
-    console.log("Generated Eiswüste terrain");
 }

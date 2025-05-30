@@ -29,7 +29,7 @@ export function calculateSizeCategory(pokemon) {
     // Extract height and weight from different possible locations in the data
     let height, weight;
     
-    // Try to get height/weight from statsDetails first (most reliable source)
+    // Try to get height/weight from statsDetails first (most  source)
     if (pokemon.statsDetails) {
         height = pokemon.statsDetails.height;
         weight = pokemon.statsDetails.weight;

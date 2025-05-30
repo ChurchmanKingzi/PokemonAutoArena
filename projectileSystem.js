@@ -2,6 +2,7 @@
  * Projectile system for Pokémon attacks 
  * Completely rewritten to handle Pokémon attacks instead of weapons
  * Updated to handle concurrent animations with Pokemon movement
+ * Now includes size scaling based on Pokemon size category
  */
 
 import { TILE_SIZE, GRID_SIZE } from './config.js';
@@ -10,17 +11,28 @@ import { followProjectile, stopFollowingProjectile, focusOnCharacter } from './c
 import { createDamageNumber } from './damageNumbers.js';
 import { rollDamageWithValue } from './diceRoller.js';
 import { updateInitiativeHP } from './initiativeDisplay.js';
-import { getTeamColor } from './utils.js';
 import { logBattleEvent } from './battleLog.js';
 import { doesPokemonOccupyTile } from './pokemonDistanceCalculator.js';
 import { calculateSizeCategory } from './pokemonSizeCalculator.js';
+
 import { createRankenhieb, addRankenhiebStyles } from './Attacken/rankenhieb.js';
 import { createGiftpuder, addGiftpuderStyles } from './Attacken/giftpuder.js';
-import { addConeStyles, createConeIndicator, removeConeIndicator, isPositionInCone, findCharactersInCone } from './attackCone.js';
+import { createConeIndicator, removeConeIndicator, isPositionInCone } from './attackCone.js';
 import { createSchlafpuder, addSchlafpuderStyles } from './Attacken/schlafpuder.js';
 import { createStachelspore, addStachelsporeStyles } from './Attacken/stachelspore.js';
-import { createSandwirbel, addSandwirbelStyles, isValidSandwirbelTarget } from './Attacken/sandwirbel.js';
+import { createSandwirbel, addSandwirbelStyles } from './Attacken/sandwirbel.js';
+import { createRasierblatt, addRasierblattStyles } from './Attacken/rasierblatt.js';
+import { createFadenschuss, addFadenschussStyles } from './Attacken/fadenschuss.js';
+import { createEissturm, addEissturmStyles } from './Attacken/eissturm.js';
+import { createExplosion, addExplosionStyles } from './Attacken/explosion.js';
+import { createAromakur, addAromakurStyles } from './Attacken/aromakur.js';
+import { createBlitzkanone, addBlitzkannoneStyles } from './Attacken/blitzkanone.js';
+import { createFlammenwurf, addFlammenwurfStyles } from './Attacken/flammenwurf.js';
+import { createBlubbstrahl, addBlubbstrahlStyles } from './Attacken/blubbstrahl.js';
+import { createEisstrahl, addEisstrahlStyles } from './Attacken/eisstrahl.js';
+
 import { updatePokemonHPBar } from './pokemonOverlay.js';
+import { applyConeAttackEffects, isConeAttack } from './coneHits.js';
 
 // Ensure styles are added at initialization
 addRankenhiebStyles();
@@ -28,7 +40,19 @@ addGiftpuderStyles();
 addSchlafpuderStyles();
 addStachelsporeStyles();
 addSandwirbelStyles();
-addConeStyles(); 
+addRasierblattStyles();
+addFadenschussStyles();
+addEissturmStyles();
+addRasierblattStyles();
+addExplosionStyles();
+addAromakurStyles();
+addBlitzkannoneStyles();
+addFlammenwurfStyles();
+addBlubbstrahlStyles();
+addEisstrahlStyles();
+
+// Add size scaling styles for basic projectiles
+addProjectileSizeStyles();
 
 // Maximum lifetime for area effect attacks in milliseconds
 const AREA_EFFECT_MAX_LIFETIME = 800; 
@@ -58,6 +82,134 @@ const PROJECTILE_SPEEDS = {
 };
 
 /**
+ * Add CSS styles for projectile size scaling
+ */
+function addProjectileSizeStyles() {
+    const styleId = 'projectile-size-styles';
+    
+    // Check if styles already exist
+    if (document.getElementById(styleId)) {
+        return;
+    }
+    
+    const style = document.createElement('style');
+    style.id = styleId;
+    style.textContent = `
+        /* Size scaling for Glut (Fire) projectiles */
+        .projectile.glut.size-1 {
+            width: 20px;
+            height: 20px;
+        }
+        .projectile.glut.size-2 {
+            width: 28px;
+            height: 28px;
+        }
+        .projectile.glut.size-3 {
+            width: 38px;
+            height: 38px;
+        }
+        .projectile.glut.size-4 {
+            width: 50px;
+            height: 50px;
+        }
+        .projectile.glut.size-5 {
+            width: 64px;
+            height: 64px;
+        }
+        
+        /* Size scaling for Aquaknarre (Water) projectiles */
+        .projectile.aquaknarre.size-1 {
+            width: 16px;
+            height: 16px;
+        }
+        .projectile.aquaknarre.size-2 {
+            width: 24px;
+            height: 24px;
+        }
+        .projectile.aquaknarre.size-3 {
+            width: 34px;
+            height: 34px;
+        }
+        .projectile.aquaknarre.size-4 {
+            width: 46px;
+            height: 46px;
+        }
+        .projectile.aquaknarre.size-5 {
+            width: 60px;
+            height: 60px;
+        }
+        
+        /* Size scaling for Steinwurf (Rock) projectiles */
+        .projectile.steinwurf.size-1 {
+            width: 18px;
+            height: 18px;
+        }
+        .projectile.steinwurf.size-2 {
+            width: 26px;
+            height: 26px;
+        }
+        .projectile.steinwurf.size-3 {
+            width: 36px;
+            height: 36px;
+        }
+        .projectile.steinwurf.size-4 {
+            width: 48px;
+            height: 48px;
+        }
+        .projectile.steinwurf.size-5 {
+            width: 62px;
+            height: 62px;
+        }
+        
+        /* Size scaling for Donnerschock (Electric) projectiles */
+        .projectile.donnerschock.size-1 {
+            width: 14px;
+            height: 14px;
+        }
+        .projectile.donnerschock.size-2 {
+            width: 20px;
+            height: 20px;
+        }
+        .projectile.donnerschock.size-3 {
+            width: 28px;
+            height: 28px;
+        }
+        .projectile.donnerschock.size-4 {
+            width: 38px;
+            height: 38px;
+        }
+        .projectile.donnerschock.size-5 {
+            width: 50px;
+            height: 50px;
+        }
+        
+        /* Size scaling for default projectiles */
+        .projectile.default.size-1 {
+            width: 16px;
+            height: 16px;
+        }
+        .projectile.default.size-2 {
+            width: 24px;
+            height: 24px;
+        }
+        .projectile.default.size-3 {
+            width: 34px;
+            height: 34px;
+        }
+        .projectile.default.size-4 {
+            width: 46px;
+            height: 46px;
+        }
+        .projectile.default.size-5 {
+            width: 60px;
+            height: 60px;
+        }
+    `;
+    
+    document.head.appendChild(style);
+}
+
+/**
  * Projectile class representing a Pokémon attack projectile
  */
 class Projectile {
@@ -79,12 +231,16 @@ class Projectile {
         this.attack = attack;
         this.isHit = isHit;
         this.callback = callback;
+        this.callbackExecuted = false; 
         this.attackName = attack.weaponName ? attack.weaponName.toLowerCase() : 'default';
         this.removed = false;
         this.damage = attack.damage || 0;
         this.teamIndex = attacker.teamIndex;
         this.skipDamage = skipDamage; 
         this.damageValue = damageValue;
+
+        // Calculate size category for scaling
+        this.sizeCategory = calculateSizeCategory(attacker.character) || 1;
 
         // Add initial and maximum speed properties
         this.initialSpeed = this.getProjectileSpeed() * speedModifier;
@@ -234,6 +390,8 @@ class Projectile {
             return 'schlafpuder';
         } else if (attackLower.includes('sandwirbel')) {
             return 'sandwirbel';
+        } else if (attackLower.includes('explosion')) {
+            return 'explosion';
     }
         
         return 'default';
@@ -261,7 +419,7 @@ class Projectile {
      */
     createVisualElement() {
         const element = document.createElement('div');
-        element.className = `projectile ${this.type}`;
+        element.className = `projectile ${this.type} size-${this.sizeCategory}`;
         
         // Add data attribute with unique ID for easier cleanup
         element.dataset.projectileId = this.id;
@@ -504,20 +662,10 @@ class Projectile {
         }
         
         // Calculate damage
-        const damageRoll = this.calculateDamage(collision);
+        const damageRoll = rollDamageWithValue();
         
         // Apply damage to the character
         this.applyDamage(collision, damageRoll);
-    }
-    
-    /**
-     * Calculate damage for this projectile
-     * @param {Object} target - Target character data
-     * @returns {Object} - Damage roll results
-     */
-    calculateDamage(target) {
-        // Standard damage calculation for all attacks
-        return rollDamageWithValue(this.damage);
     }
     
     /**
@@ -560,44 +708,41 @@ class Projectile {
             return;
         }
         
-        // Get total damage
+        // If we have a pre-calculated damage value, use the callback method
+        if (this.damageValue !== null) {
+            if (this.callback && !this.callbackExecuted) {
+                this.callbackExecuted = true; // Mark as executed
+                this.callback(true);
+                this.callback = null; // Clear to prevent double execution
+            }
+            return;
+        }
+        
+        // Normal damage application logic...
         const damageAmount = parseInt(damageRoll.total, 10);
         
-        // Only show damage number and update visuals if damage is greater than zero
         if (damageAmount > 0) {
-            // Show damage number
+            // Show damage and update HP...
             createDamageNumber(damageRoll.total, target.position, damageRoll.total >= 8);
             
-            // Apply damage to target's health
             const oldKP = parseInt(target.character.currentKP, 10);
             target.character.currentKP = Math.max(0, oldKP - damageAmount);
             
-            // Update HP bar immediately using the overlay system
             try {
                 updatePokemonHPBar(target.id, target.character);
             } catch (error) {
                 console.error('Failed to update HP bar:', error);
             }
-            
-            // Handle defeat logic
-            if (target.character.currentKP <= 0) {
-                // Mark character as defeated
-                target.position.isDefeated = true;
-                
-                // Log defeat
-                logBattleEvent(`${target.character.name} is defeated and leaves the battle!`);
-                
-                // Import and call the function to handle a defeated character
-                import('./characterPositions.js').then(module => {
-                    module.removeDefeatedCharacter(target.id);
-                }).catch(error => {
-                    console.error("Error importing module to handle defeated character:", error);
-                });
-            }
         }
         
-        // Update initiative HP display
         updateInitiativeHP();
+        
+        // Execute callback only once
+        if (this.callback && !this.callbackExecuted) {
+            this.callbackExecuted = true; // Mark as executed
+            this.callback(true);
+            this.callback = null; // Clear to prevent double execution
+        }
     }
     
     /**
@@ -607,73 +752,46 @@ class Projectile {
         // If already marked as removed, avoid duplicate processing
         if (this.removed) return;
         
-        // Mark as pending removal, but don't set fully removed yet
+        // Mark as pending removal
         this.pendingRemoval = true;
         
-        // Create impact effect if this is an area effect attack reaching the edge
+        // Create impact effect if needed
         if (this.isAreaEffect && this.isAreaEffect() && this.coneEdgeReached) {
             this.createImpactEffect();
         }
         
-        // Remove the visual element with enhanced error handling
+        // Remove visual element
         let elementRemoved = false;
         try {
             if (this.element) {
-                // Force removal from DOM regardless of parent node
                 if (this.element.parentNode) {
                     this.element.parentNode.removeChild(this.element);
                     elementRemoved = true;
                 } else {
+                    // Alternative cleanup methods...
                     try {
                         document.body.removeChild(this.element);
                         elementRemoved = true;
                     } catch (e) {
-                        console.warn("Failed to remove element directly from document.body, trying alternative removal");
-                        // Try to find the element in the DOM and remove it
-                        const elementInDOM = document.querySelector(`.projectile.${this.type}[data-projectile-id="${this.id}"]`);
-                        if (elementInDOM) {
+                        // Try to find and remove by ID
+                        const elementInDOM = document.querySelector(`.projectile[data-projectile-id="${this.id}"]`);
+                        if (elementInDOM && elementInDOM.parentNode) {
                             elementInDOM.parentNode.removeChild(elementInDOM);
                             elementRemoved = true;
                         }
                     }
                 }
-                
-                if (!elementRemoved) {
-                    // As a last resort, hide the element and mark for later cleanup
-                    console.warn(`Failed direct removal of projectile ${this.id}, hiding and queuing for cleanup`);
-                    if (this.element) {
-                        this.element.style.display = 'none';
-                        this.element.dataset.orphaned = 'true';
-                        this.element.dataset.timestamp = Date.now();
-                        // Add special class for easy querying later
-                        this.element.classList.add('orphaned-projectile');
-                        // Don't set elementRemoved to true since we need cleanup later
-                    }
-                }
-                
-                // Null out the reference regardless
                 this.element = null;
             }
         } catch (error) {
-            console.error("Critical error removing projectile element:", error);
-            // Try emergency hiding as a fallback
-            try {
-                if (this.element) {
-                    this.element.style.display = 'none';
-                    this.element.classList.add('orphaned-projectile');
-                    this.element = null;
-                }
-            } catch (e) {
-                console.error("Failed emergency hiding of projectile:", e);
-            }
+            console.error("Error removing projectile element:", error);
         }
 
         // Stop following this projectile
         stopFollowingProjectile();
         
-        // Refocus on attacker if they're still active
+        // Refocus on attacker if needed
         if (this.attacker && !this.attacker.isDefeated) {
-            // Find the attacker's character ID
             const characterPositions = getCharacterPositions();
             for (const charId in characterPositions) {
                 if (characterPositions[charId] === this.attacker) {
@@ -685,28 +803,25 @@ class Projectile {
             }
         }
         
-        // Only mark as fully removed if the element was successfully removed
-        // or we've hidden it and nulled the reference
-        if (elementRemoved || this.element === null) {
-            this.removed = true;
-            
-            // Remove from active projectiles - force splice by index to ensure removal
-            const index = activeProjectiles.findIndex(p => p.id === this.id);
-            if (index !== -1) {
-                activeProjectiles.splice(index, 1);
+        // Mark as fully removed
+        this.removed = true;
+        
+        // Remove from active projectiles array
+        const index = activeProjectiles.findIndex(p => p.id === this.id);
+        if (index !== -1) {
+            activeProjectiles.splice(index, 1);
+        }
+        
+        // Only call callback if it hasn't been executed yet
+        if (this.callback && !this.callbackExecuted) {
+            this.callbackExecuted = true; // Mark as executed
+            try {
+                this.callback(this.coneEdgeReached);
+            } catch (error) {
+                console.error("Error in projectile callback:", error);
+            } finally {
+                this.callback = null; // Always clear after execution
             }
-            
-            // Call the callback if provided
-            if (this.callback) {
-                try {
-                    this.callback(this.coneEdgeReached);
-                } catch (error) {
-                    console.error("Error in projectile callback:", error);
-                }
-            }
-        } else {
-            // If we couldn't remove the element, schedule for cleanup by the safety system
-            scheduleOrphanedProjectileCleanup();
         }
     }
 
@@ -746,8 +861,7 @@ class Projectile {
     }
 }
 
-/**
- * Create and fire a projectile for a Pokémon attack
+ /* Create and fire a projectile for a Pokémon attack
  * @param {Object} attacker - The Pokémon using the attack
  * @param {Object} target - The target Pokémon/position
  * @param {Object} attack - The attack data
@@ -758,36 +872,134 @@ class Projectile {
  * @returns {Projectile} - The created projectile
  */
 export function fireProjectile(attacker, target, attack, isHit = true, callback = null, damageValue = null) {
-    // Check if line of sight is blocked by an ally (skip for Rankenhieb which can curve)
-    if (attack.weaponName?.toLowerCase() !== 'rankenhieb' && isLineOfSightBlockedByAlly(attacker, target)) {
+    // Check if line of sight is blocked by an ally (skip for line attacks that can curve)
+    const isLineAttack = (attack.weaponName?.toLowerCase() === 'rankenhieb' || 
+                         attack.weaponName?.toLowerCase() === 'fadenschuss');
+    
+    if (!isLineAttack && isLineOfSightBlockedByAlly(attacker, target)) {
         logBattleEvent(`${attacker.character.name} can't get a clear shot at ${target.character.name} - an ally is in the way.`);
         if (callback) callback();
         return null;
     }
 
-    // Special handling for Rankenhieb (Vine Whip)
+    // Special handling for Rankenhieb (Vine Whip) - line attack, not a cone attack
     if (attack.weaponName && attack.weaponName.toLowerCase() === 'rankenhieb') {
         return createRankenhieb(attacker, target, attack, isHit, callback, activeProjectiles);
     }
     
-    // Special handling for Giftpuder (Poison Powder)
-    if (attack.weaponName && attack.weaponName.toLowerCase() === 'giftpuder') {
-        return createGiftpuder(attacker, target, attack, isHit, callback, activeProjectiles);
+    // Special handling for Fadenschuss (String Shot) - line attack, not a cone attack
+    if (attack.weaponName && attack.weaponName.toLowerCase() === 'fadenschuss') {
+        return createFadenschuss(attacker, target, attack, isHit, callback, activeProjectiles);
+    }
+
+    // Special handling for Aromakur
+    if (attack.weaponName && attack.weaponName.toLowerCase() === 'aromakur') {
+        return createAromakur(attacker, target, attack, isHit, callback, activeProjectiles);
+    }
+
+    // Special handling for Blitzkanone - high-velocity piercing projectile
+    if (attack.weaponName && attack.weaponName.toLowerCase() === 'blitzkanone') {
+        return createBlitzkanone(attacker, target, attack, isHit, callback, activeProjectiles);
+    }
+
+    // Special handling for Flammenwurf
+    if (attack.weaponName && attack.weaponName.toLowerCase() === 'flammenwurf') {
+        // Get attack successes from the damage value if pre-calculated
+        const attackSuccesses = damageValue ? 3 : 0; // Default to 3 for proper effects
+        return createFlammenwurf(attacker, target, attack, isHit, callback, activeProjectiles, attackSuccesses);
+    }
+
+    // Special handling for Blubbstrahl
+    if (attack.weaponName && attack.weaponName.toLowerCase() === 'blubbstrahl') {
+        // Get attack successes from the damage value if pre-calculated
+        const attackSuccesses = damageValue ? 3 : 0; // Default to 3 for proper effects
+        return createBlubbstrahl(attacker, target, attack, isHit, callback, activeProjectiles, attackSuccesses);
+    }
+
+    // Special handling for Eisstrahl - powerful line attack
+    if (attack.weaponName && attack.weaponName.toLowerCase() === 'eisstrahl') {
+        return createEisstrahl(attacker, target, attack, isHit, callback, activeProjectiles);
     }
     
-    // Special handling for Schlafpuder (Sleep Powder)
-    if (attack.weaponName && attack.weaponName.toLowerCase() === 'schlafpuder') {
-        return createSchlafpuder(attacker, target, attack, isHit, callback, activeProjectiles);
-    }
-    
-    // Special handling for Stachelspore (Stun Spore)
-    if (attack.weaponName && attack.weaponName.toLowerCase() === 'stachelspore') {
-        return createStachelspore(attacker, target, attack, isHit, callback, activeProjectiles);
-    }
-    
-    // Special handling for Sandwirbel (Sand Attack)
-    if (attack.weaponName && attack.weaponName.toLowerCase() === 'sandwirbel') {
-        return createSandwirbel(attacker, target, attack, isHit, callback, activeProjectiles);
+    // Handle cone-based attacks with the centralized system
+    if (isConeAttack(attack)) {
+        const attackName = attack.weaponName.toLowerCase();
+        
+        // Create the appropriate cone attack for visual effects
+        let coneAttack;
+        switch (attackName) {
+            case 'giftpuder':
+                coneAttack = createGiftpuder(attacker, target, attack, isHit, callback, activeProjectiles);
+                break;
+            case 'schlafpuder':
+                coneAttack = createSchlafpuder(attacker, target, attack, isHit, callback, activeProjectiles);
+                break;
+            case 'stachelspore':
+                coneAttack = createStachelspore(attacker, target, attack, isHit, callback, activeProjectiles);
+                break;
+            case 'sandwirbel':
+                coneAttack = createSandwirbel(attacker, target, attack, isHit, callback, activeProjectiles);
+                break;
+            case 'rasierblatt':
+                coneAttack = createRasierblatt(attacker, target, attack, isHit, callback, activeProjectiles);
+                break;
+            case 'eissturm':
+                coneAttack = createEissturm(attacker, target, attack, isHit, callback, activeProjectiles);
+                break;
+            case 'explosion':
+                coneAttack = createExplosion(attacker, target, attack, isHit, callback, activeProjectiles);
+                break;
+            default:
+                // Generic cone attack - create a basic cone visual
+                coneAttack = new ConeAttack(attacker, target, attack, isHit, callback, activeProjectiles);
+                break;
+        }
+        
+        // Modify the cone attack to use centralized hit detection
+        if (coneAttack) {
+            // Override the applyDamage/applyStatus methods to use centralized system
+            const originalApplyMethod = coneAttack.applyDamage || coneAttack.applyPoisonStatus || 
+                                      coneAttack.applySleepStatus || coneAttack.applyParalysisStatus ||
+                                      coneAttack.applyGENAReduction || coneAttack.applyEffects;
+            
+            if (originalApplyMethod) {
+                coneAttack.applyCentralizedEffects = function() {
+                    if (this.effectApplied || this.damageApplied || this.statusApplied || this.removed) return;
+                    
+                    // Mark as applied to prevent original method from running
+                    this.effectApplied = true;
+                    this.damageApplied = true;
+                    this.statusApplied = true;
+                    
+                    // Apply effects through centralized system
+                    const results = applyConeAttackEffects(
+                        this.attacker, 
+                        this.effectiveTarget, 
+                        this.attack, 
+                        this.range, 
+                        this.coneAngle, 
+                        this.isHit
+                    );
+                    
+                    // Apply visual hit effects for each target
+                    results.effects.forEach(effect => {
+                        if (effect.type === 'damage' || effect.type === 'damage_and_stat') {
+                            // Visual hit effects are already handled in applyConeAttackEffects
+                        }
+                    });
+                };
+                
+                // Replace the original apply method
+                if (coneAttack.applyDamage) coneAttack.applyDamage = coneAttack.applyCentralizedEffects;
+                if (coneAttack.applyPoisonStatus) coneAttack.applyPoisonStatus = coneAttack.applyCentralizedEffects;
+                if (coneAttack.applySleepStatus) coneAttack.applySleepStatus = coneAttack.applyCentralizedEffects;
+                if (coneAttack.applyParalysisStatus) coneAttack.applyParalysisStatus = coneAttack.applyCentralizedEffects;
+                if (coneAttack.applyGENAReduction) coneAttack.applyGENAReduction = coneAttack.applyCentralizedEffects;
+                if (coneAttack.applyEffects) coneAttack.applyEffects = coneAttack.applyCentralizedEffects;
+            }
+        }
+        
+        return coneAttack;
     }
     
     // For all other projectiles, use standard implementation
@@ -834,14 +1046,14 @@ export function fireAreaEffect(attacker, targetDirection, attack, callback = nul
     const safetyTimeouts = [];
     
     // First safety timeout - should catch most cases
-    safetyTimeouts.push(setTimeout(() => {
+    safetyTimeouts.push(reliablesetTimeout(() => {
         if (!callbackExecuted) {
             finalizeAreaEffect();
         }
     }, AREA_EFFECT_MAX_LIFETIME + 300)); // Slightly longer than max particle lifetime
     
     // Second safety timeout - absolute fallback
-    safetyTimeouts.push(setTimeout(() => {
+    safetyTimeouts.push(reliablesetTimeout(() => {
         if (!callbackExecuted) {
             console.warn(`Using secondary safety timeout for area effect batch ${batchId} - first one failed`);
             finalizeAreaEffect();
@@ -849,7 +1061,7 @@ export function fireAreaEffect(attacker, targetDirection, attack, callback = nul
     }, AREA_EFFECT_MAX_LIFETIME * 1.5)); // Much longer timeout as ultimate fallback
     
     // Last resort safety timeout
-    safetyTimeouts.push(setTimeout(() => {
+    safetyTimeouts.push(reliablesetTimeout(() => {
         if (!callbackExecuted) {
             console.error(`Using FINAL safety timeout for area effect batch ${batchId} - all others failed`);
             finalizeAreaEffect(true); // Force cleanup
@@ -1342,48 +1554,40 @@ export function setupParticleCleanupInterval(batchId, projectileIds) {
  * Clear all active projectiles
  */
 export function clearAllProjectiles() {
-    // Create a copy of the array to prevent modification issues during iteration
+    console.log('Clearing all projectiles...');
+    
+    // Create a copy to avoid modification during iteration
     const projectilesToDestroy = [...activeProjectiles];
+    activeProjectiles.length = 0; // Clear immediately
     
-    // Clear the original array first to prevent any new updates
-    const totalCount = activeProjectiles.length;
-    activeProjectiles = [];
-    
-    // Now destroy each projectile
     let destroyedCount = 0;
     for (const projectile of projectilesToDestroy) {
         try {
+            // Mark callback as executed to prevent it from firing
+            if (projectile.callback) {
+                projectile.callbackExecuted = true;
+                projectile.callback = null;
+            }
+            
             // Remove visual elements
-            if (projectile.element && projectile.element.parentNode) {
-                projectile.element.parentNode.removeChild(projectile.element);
-            } else if (projectile.element) {
-                // Try removing from document.body as fallback
-                try {
-                    document.body.removeChild(projectile.element);
-                } catch (e) {
-                    console.warn(`Failed to remove projectile element for ${projectile.id}:`, e);
-                    // Hide as last resort
-                    if (projectile.element) {
-                        projectile.element.style.display = 'none';
-                    }
+            if (projectile.element) {
+                if (projectile.element.parentNode) {
+                    projectile.element.parentNode.removeChild(projectile.element);
+                } else {
+                    // Try alternative removal
+                    const elements = document.querySelectorAll(`.projectile[data-projectile-id="${projectile.id}"]`);
+                    elements.forEach(el => {
+                        if (el.parentNode) el.parentNode.removeChild(el);
+                    });
                 }
             }
             
             // Mark as removed
             projectile.removed = true;
             
-            // Execute callback if exists
-            if (projectile.callback && typeof projectile.callback === 'function') {
-                try {
-                    projectile.callback();
-                } catch (callbackError) {
-                    console.error("Error in projectile callback during cleanup:", callbackError);
-                }
-            }
-            
             destroyedCount++;
         } catch (error) {
-            console.error("Error destroying projectile during cleanup:", error);
+            console.warn("Error destroying projectile:", error);
         }
     }
     
@@ -1395,20 +1599,16 @@ export function clearAllProjectiles() {
         }
     }
     
-    // Clear the main safety interval if it exists
-    if (window.particleCleanupInterval) {
-        clearInterval(window.particleCleanupInterval);
-        window.particleCleanupInterval = null;
-    }
-    
-    // Reset animation frame variables
+    // Reset animation variables
     lastFrameTime = 0;
     updateInProgress = false;
     
-    // Run final DOM cleanup to catch any orphaned elements
+    // Final DOM cleanup
     setTimeout(() => {
-        const extraCleanup = cleanupOrphanedProjectiles();
+        cleanupOrphanedProjectiles();
     }, 100);
+    
+    console.log(`Cleared ${destroyedCount} projectiles and prevented orphaned callbacks`);
 }
 
 /**
@@ -1430,6 +1630,30 @@ export function updateProjectiles(timestamp) {
         return;
     }
     
+    // Check if attacks are in progress and pause projectile updates if so
+    // (This prevents projectiles from interfering with attack timing)
+    const checkAttacksAndContinue = async () => {
+        try {
+            const { areAttacksInProgress } = await import('./turnSystem.js');
+            if (areAttacksInProgress()) {
+                // Attacks in progress, pause projectile updates
+                setTimeout(() => {
+                    requestAnimationFrame(updateProjectiles);
+                }, 50);
+                return;
+            }
+        } catch (error) {
+            // If import fails, continue normally
+        }
+        
+        // Continue with normal projectile update logic
+        continueProjectileUpdate(timestamp);
+    };
+    
+    checkAttacksAndContinue();
+}
+
+function continueProjectileUpdate(timestamp) {
     // Set flag to indicate we're processing updates
     updateInProgress = true;
     
@@ -1579,6 +1803,16 @@ function checkForStaleProjectiles(now) {
  * Start the projectile update loop if not already running
  */
 export function startProjectileSystem() {
+    // Check if any attacks are in progress before starting projectiles
+    const checkAttacksInProgress = async () => {
+        try {
+            const { areAttacksInProgress } = await import('./turnSystem.js');
+            return areAttacksInProgress();
+        } catch (error) {
+            return false;
+        }
+    };
+    
     // Check if animation loop is currently running
     const isLoopRunning = lastFrameTime !== 0;
     
@@ -1590,11 +1824,13 @@ export function startProjectileSystem() {
         // Start the animation loop
         requestAnimationFrame(updateProjectiles);
         
-        // As a precaution, set a global timeout to check for a stalled animation loop
+        // Enhanced watchdog with unified attack check
         if (!window.animationLoopWatchdog) {
-            window.animationLoopWatchdog = setTimeout(() => {
+            window.animationLoopWatchdog = setTimeout(async () => {
                 // Check if we have active projectiles but the animation loop isn't running
-                if (activeProjectiles.length > 0 && lastFrameTime === 0) {
+                const attacksInProgress = await checkAttacksInProgress();
+                
+                if (activeProjectiles.length > 0 && lastFrameTime === 0 && !attacksInProgress) {
                     console.warn("Animation loop appears stalled - restarting projectile system");
                     lastFrameTime = 0;
                     updateInProgress = false;
@@ -1603,7 +1839,7 @@ export function startProjectileSystem() {
                 
                 // Clean up the watchdog
                 window.animationLoopWatchdog = null;
-            }, 1000); // Check after 1 second
+            }, 1000);
         }
     }
 }

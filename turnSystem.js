@@ -1,22 +1,47 @@
-/**
- * Turn management system
- */
 import { logBattleEvent } from './battleLog.js';
-import { getSortedCharacters, setSortedCharacters, getSortedCharactersDisplay, removeDefeatedFromLogic, markDefeatedInDisplay } from './initiative.js';
-import { getCharacterPositions, removeDefeatedCharacter } from './characterPositions.js';
+import { getSortedCharacters, getSortedCharactersDisplay } from './initiative.js';
+import { getCharacterPositions } from './characterPositions.js';
 import { highlightActiveCharacter, unhighlightActiveCharacter } from './animationManager.js';
-import { findNearestEnemyInRange, getBestAttack, performAttack } from './attackSystem.js';
-import { moveCharacterByStrategy } from './strategyMovement.js';
+import { findNearestEnemy, findNearestEnemyInRange, getBestAttack, performAttack, findNearestAlly, findNearestAllyInRange } from './attackSystem.js';
 import { updateInitiativeHP } from './initiativeDisplay.js';
 import { processMovementWithTerrainChecks } from './movementRange.js';
-import { processStatusEffectsStart, processStatusEffectsEnd } from './statusEffects.js';
+import { processStatusEffectsStart, processStatusEffectsEnd, hasStatusEffect } from './statusEffects.js';
 import { resetTakenTurnsTracker, markTurnTaken, getNextImmediateTurn } from './initiativeChanges.js';
 import { animateStatBoost } from './animationManager.js';
 import { changeStatValue, getCurrentStage } from './statChanges.js';
+import { isLineOfSightBlockedByAlly } from './projectileSystem.js';
+import { calculateMinDistanceBetweenPokemon } from './pokemonDistanceCalculator.js';
+import { doesPokemonOccupyTile } from './pokemonDistanceCalculator.js';
+import { calculateSizeCategory } from './pokemonSizeCalculator.js';
+import { GRID_SIZE } from './config.js';
+import { areAllTeamMembersFleeing, findFurthestTileFromEnemies } from './Strategien/fliehend.js';
+import { shouldUseStatusMove, getBestAttackWithStatusLogic, selectAimingTarget, selectOpportunisticTarget } from './Strategien/movePrioritization.js';
+import { calculateMovementRange } from './movementRange.js';
+import { findPathToTarget } from './pathfinding.js';
+import { updatePokemonPosition } from './pokemonOverlay.js';
+import { isConeAttack } from './coneHits.js';
+
 import { animateSchwerttanz } from './Attacken/schwerttanz.js';
+import { animatePanzerschutz } from './Attacken/panzerschutz.js';
+import { animateHärtner } from './Attacken/härtner.js';
+import { animateEisenabwehr } from './Attacken/eisenabwehr.js';
+import { animateEinigler } from './Attacken/einigler.js';
+import { animateAgilitaet } from './Attacken/agilitaet.js';
+import { handleTurnChainBreaking, isInWalzerChain, updateWalzerChainVisual } from './Attacken/walzer.js';
+import { checkAndHandleSonnentag } from './Attacken/sonnentag.js';
+import { checkAndHandleRegentanz } from './Attacken/regentanz.js';
+import { checkAndHandleSandsturm } from './Attacken/sandsturm.js';
+import { checkAndHandleHagelsturm } from './Attacken/hagelsturm.js';
+import { checkAndHandleSchneelandschaft } from './Attacken/schneelandschaft.js';
+
 import { focusOnCharacter } from './cameraSystem.js';
-import { displayInitiativeOrder } from './initiativeDisplay.js';
-import { updatePokemonHPBar } from './pokemonOverlay.js';
+import { shouldStartNewRound, getNextPokemonForTurn } from './initiativeChanges.js';
+import { calculateDoubleTurns, resetDoubleTurnCounters, markTurnTaken as markDoubleTurnTaken, hasDoubleTurns, getTurnsTakenThisRound } from './doubleTurnSystem.js';
+import { startOfTurnClassCheck } from './classManager.js';
+import { getCurrentWeather, reduceWeatherTimer, applyWeatherEffects } from './weather.js';
+import { findSupportMoves, getRandomValidAttack } from './utils.js';
+
+import { handleJongleurSwap } from './Klassen/jongleur.js';
 
 // Current turn counter
 let currentTurn = 0;
@@ -24,8 +49,45 @@ let currentTurn = 0;
 // Flag to prevent multiple turn ends (which would then call multiple new turns)
 let currentTurnEnded = false;
 
+// Flag to track if turn ending is in progress
+let currentTurnEndingInProgress = false;
+
+// Track the last character that ended a turn to prevent duplicates
+let lastTurnEndedCharacter = null;
+
 // Track immediate turn requests
 let pendingImmediateTurn = null;
+
+// ANIMATION DELAY CONSTANTS
+const STANDARD_TURN_END_DELAY = 100;
+const DOUBLE_TURN_ANIMATION_DELAY = 1500; // 1.5 seconds for double turns to ensure animations complete
+const POST_ATTACK_DELAY = 500; // Extra delay after attacks with potential animations
+
+//Wait on Explosions
+let explosionsInProgress = 0;
+let explosionCompletionCallbacks = [];
+
+// Track all long-running attacks in progress
+let attacksInProgress = 0;
+let attackCompletionCallbacks = [];
+let activeAttackTypes = new Set();
+
+/**
+ * Get the effective range of an attack for turn system logic
+ * Cone attacks get -1 range penalty during selection
+ * @param {Object} attack - The attack object
+ * @returns {number} - Effective range for selection
+ */
+function getEffectiveRangeForTurnLogic(attack) {
+    const baseRange = attack.range || 1;
+    
+    // Check if this is a cone attack
+    if (isConeAttack(attack)) {
+        return Math.max(1, baseRange - 1); // Minimum range of 1, subtract 1 for cone attacks
+    }
+    
+    return baseRange;
+}
 
 /**
  * Get the current turn number
@@ -40,6 +102,16 @@ export function getCurrentTurn() {
  */
 export function resetTurn() {
     currentTurn = 0;
+    currentTurnEnded = false;
+    currentTurnEndingInProgress = false;
+    lastTurnEndedCharacter = null;
+    pendingImmediateTurn = null;
+    
+    // Reset explosion tracking
+    explosionsInProgress = 0;
+    explosionCompletionCallbacks = [];
+    
+    console.log("Turn system state reset");
 }
 
 /**
@@ -70,97 +142,141 @@ export function checkBattleEnd() {
     return null;
 }
 
-export function endTurn(activeCharacter) {
-    // Prevent multiple endTurn calls for the same turn
-    if (currentTurnEnded) {
+export async function endTurn(activeCharacter) {
+    // Enhanced duplicate prevention
+    if (currentTurnEnded || currentTurnEndingInProgress) {
         console.warn('endTurn() called multiple times for the same turn - ignoring duplicate');
+        console.trace(); // This will help identify where the duplicate calls are coming from
         return;
     }
-    currentTurnEnded = true;
     
-    // Mark this character as having taken its turn this round
-    if (activeCharacter.character && activeCharacter.character.uniqueId) {
-        markTurnTaken(activeCharacter.character.uniqueId);
+    // Check if this is the exact same character trying to end turn again
+    if (lastTurnEndedCharacter && 
+        lastTurnEndedCharacter.uniqueId === activeCharacter.character?.uniqueId) {
+        console.warn(`endTurn() called again for the same character (${activeCharacter.character.name}) - ignoring duplicate`);
+        return;
     }
     
-    // Log end of turn
-    logBattleEvent(`${activeCharacter.character.name} beendet seinen Zug.`);
+    // Set flags to prevent multiple executions
+    currentTurnEnded = true;
+    currentTurnEndingInProgress = true;
+    lastTurnEndedCharacter = activeCharacter.character;
     
-    const characterPositions = getCharacterPositions();
-    
-    // Find active character ID
-    const activeCharId = Object.keys(characterPositions).find(id => 
-        characterPositions[id].character === activeCharacter.character);
-    
-    if (activeCharId) {
-        // Get character position
-        const position = {
-            x: characterPositions[activeCharId].x,
-            y: characterPositions[activeCharId].y
-        };
-        
-        // Process status effects at the end of turn, passing position
-        const statusResult = processStatusEffectsEnd(activeCharacter.character, position);
-        
-        // Log status effect messages
-        statusResult.messages.forEach(message => {
-            logBattleEvent(message);
-        });
-        
-        // Apply status effect damage
-        if (statusResult.damage > 0) {
-            activeCharacter.character.currentKP -= statusResult.damage;
+    try {
+        // Mark this character as having taken its turn this round
+        if (activeCharacter.character && activeCharacter.character.uniqueId) {
+            const pokemonId = activeCharacter.character.uniqueId;
             
-            // Update HP display
-            updateInitiativeHP();
-            updatePokemonHPBar(activeCharId, activeCharacter.character);
+            markTurnTaken(pokemonId); // Initiative system
             
-            // Check if character was defeated by status effects
-            if (activeCharacter.character.currentKP <= 0) {
-                activeCharacter.character.currentKP = 0;
+            // Mark in double turn system and get current count
+            const turnsTaken = markDoubleTurnTaken(pokemonId);
+            
+            // Simple check: if they have double turns and this was their first turn, give second turn
+            if (hasDoubleTurns(pokemonId) && turnsTaken === 1) {
+                logBattleEvent(`${activeCharacter.character.name} erhält einen zweiten Zug in dieser Runde!`);
                 
-                // Remove from logic list and mark in display list
-                removeDefeatedFromLogic(activeCharacter.character.uniqueId);
-                markDefeatedInDisplay(activeCharacter.character.uniqueId);
+                // Reset flags for the second turn
+                currentTurnEnded = false;
+                currentTurnEndingInProgress = false;
+                lastTurnEndedCharacter = null;
                 
-                // Remove from battlefield
-                removeDefeatedCharacter(activeCharId);
-                
-                // Update the display to show the changes
-                displayInitiativeOrder(getSortedCharactersDisplay());
-                
-                logBattleEvent(`${activeCharacter.character.name} wurde besiegt!`);
+                setTimeout(() => {
+                    triggerImmediateTurn(pokemonId);
+                    turn();
+                }, DOUBLE_TURN_ANIMATION_DELAY);
+                return;
+            }
+            
+            // Log if this was their second turn
+            if (turnsTaken === 2) {
+                logBattleEvent(`${activeCharacter.character.name} hat beide Züge dieser Runde verwendet.`);
             }
         }
         
-        // Clear the attack allies flag if it was set
-        if (activeCharacter.character.attackAllies) {
-            activeCharacter.character.attackAllies = false;
+        // Log end of turn
+        logBattleEvent(`${activeCharacter.character.name} beendet seinen Zug.`);
+        
+        const characterPositions = getCharacterPositions();
+        
+        // Find active character ID
+        const activeCharId = Object.keys(characterPositions).find(id => 
+            characterPositions[id].character === activeCharacter.character);
+        
+        if (activeCharId) {
+            // Get character position
+            const position = {
+                x: characterPositions[activeCharId].x,
+                y: characterPositions[activeCharId].y
+            };
+            
+            // Process status effects at the end of turn
+            const statusResult = await processStatusEffectsEnd(activeCharacter.character, position);
+            
+            // Log status effect messages
+            statusResult.messages.forEach(message => {
+                logBattleEvent(message);
+            });
+            
+            // Clear the attack allies flag if it was set
+            if (activeCharacter.character.attackAllies) {
+                activeCharacter.character.attackAllies = false;
+            }
+            
+            // Handle Jongleur class effect
+            if (activeCharacter.character.currentKP > 0) {
+                await handleJongleurSwap(activeCharacter, activeCharId);
+            }
         }
-    }
-    
-    // Check if we've reached turn 100
-    if (currentTurn >= 2000) {
-        logBattleEvent(`<div class="log-turn-header">TIMEOUT! DER KAMPF ENDET UNENTSCHIEDEN!</div>`, true);
-        return; // End the battle
-    }
-    
-    // Check if there's an immediate turn we need to process
-    const immediateId = getNextImmediateTurn();
-    if (immediateId) {
-        pendingImmediateTurn = immediateId;
-        // Reset the turn ended flag and return - immediate turn will handle next scheduling
-        setTimeout(() => {
+        
+        // Check if we've reached turn 2000
+        if (currentTurn >= 2000) {
+            logBattleEvent(`<div class="log-turn-header">TIMEOUT! DER KAMPF ENDET UNENTSCHIEDEN!</div>`, true);
+            return;
+        }
+
+        // Wait for explosions before scheduling the next turn
+        if (areExplosionsInProgress()) {
+            console.log("Waiting for explosions to complete before ending turn...");
+            await waitForExplosionsToComplete();
+        }
+        
+        // Check if there's an immediate turn we need to process
+        const immediateId = getNextImmediateTurn();
+        if (immediateId) {
+            pendingImmediateTurn = immediateId;
+            
+            // Reset flags for immediate turn
             currentTurnEnded = false;
-        }, 10);
-        return;
+            currentTurnEndingInProgress = false;
+            lastTurnEndedCharacter = null;
+            
+            setTimeout(() => {
+                turn(); 
+            }, 10);
+            return;
+        }
+        
+        // Schedule next turn
+        setTimeout(() => {
+            // Reset flags before starting next turn
+            currentTurnEnded = false;
+            currentTurnEndingInProgress = false;
+            lastTurnEndedCharacter = null;
+            turn();
+        }, 50);
+        
+    } catch (error) {
+        console.error("Error in endTurn:", error);
+        
+        // Reset flags even if there's an error
+        currentTurnEnded = false;
+        currentTurnEndingInProgress = false;
+        lastTurnEndedCharacter = null;
+    } finally {
+        // Always clear the "in progress" flag
+        currentTurnEndingInProgress = false;
     }
-    
-    // Only schedule next turn if no immediate turn is pending
-    setTimeout(() => {
-        currentTurnEnded = false; // Reset flag before starting next turn
-        turn();
-    }, 50); // 50ms delay between turns
 }
 
 /**
@@ -176,93 +292,30 @@ export function triggerImmediateTurn(pokemonId) {
  * Execute a single turn in the battle
  */
 export async function turn() {
-    // Handle immediate turn if there is one pending
-    if (pendingImmediateTurn) {
-        // Get the character that should take an immediate turn from logic list
-        const sortedCharactersLogic = getSortedCharacters();
-        const characterPositions = getCharacterPositions();
-        
-        // Find the character with the pending immediate turn
-        const pendingCharacter = sortedCharactersLogic.find(
-            entry => entry.character && entry.character.uniqueId === pendingImmediateTurn
-        );
-        
-        // Find the character ID
-        let pendingCharId = null;
-        for (const charId in characterPositions) {
-            if (characterPositions[charId].character && 
-                characterPositions[charId].character.uniqueId === pendingImmediateTurn) {
-                pendingCharId = charId;
-                break;
-            }
-        }
-        
-        // Clear the pending immediate turn
-        const immediateTurnId = pendingImmediateTurn;
-        pendingImmediateTurn = null;
-        
-        // If character found and not defeated, give them a turn
-        if (pendingCharacter && pendingCharId && 
-            !characterPositions[pendingCharId].isDefeated) {
-            
-            // Log that this is a special immediate turn
-            logBattleEvent(`<div class="log-turn-header">${pendingCharacter.character.name} erhält einen sofortigen Zug!</div>`, true);
-            
-            // Mark this character as having taken its turn
-            markTurnTaken(immediateTurnId);
-            
-            // Reset swim check flags
-            characterPositions[pendingCharId].hasPassedSwimmingCheck = false;
-            if (characterPositions[pendingCharId].character) {
-                characterPositions[pendingCharId].character.hasPassedSwimmingCheck = false;
-            }
-            
-            // Highlight the active character
-            highlightActiveCharacter(pendingCharId);
-            
-            // Focus camera on the active character and wait for it to complete
-            await focusOnCharacter(pendingCharId);
-            
-            // Add delay AFTER camera arrives at its location
-            await new Promise(resolve => setTimeout(resolve, 100));
-            
-            // Process status effects at start of turn
-            const statusMessages = processStatusEffectsStart(pendingCharacter.character);
-            
-            // Log any status messages
-            statusMessages.forEach(message => {
-                logBattleEvent(message);
-            });
-            
-            // Skip turn if a status effect caused it
-            if (pendingCharacter.character.skipTurn) {
-                // Remove the flag for next turn
-                pendingCharacter.character.skipTurn = false;
-                
-                // End turn immediately
-                setTimeout(() => {
-                    unhighlightActiveCharacter();
-                    endTurn(pendingCharacter);
-                }, 100);
-                return;
-            }
-            
-            // Process the turn with the character's strategy
-            const strategy = characterPositions[pendingCharId].character.strategy || 'aggressive';
-            
-            // Handle turn based on strategy
-            if (strategy === 'fleeing') {
-                handleFleeingStrategy(pendingCharId, pendingCharacter);
-            } else if (strategy === 'defensive') {
-                handleDefensiveStrategy(pendingCharId, pendingCharacter);
-            } else {
-                handleAggressiveStrategy(pendingCharId, pendingCharacter);
-            }
-            
-            return; // Exit to avoid processing a regular turn
-        }
+    // Wait for any ongoing attacks to complete before starting a new turn
+    if (areAttacksInProgress()) {
+        console.log(`Waiting for attacks to complete before processing next turn... (Active: ${getActiveAttackTypes().join(', ')})`);
+        await waitForAttacksToComplete();
     }
 
+    // Check if any character is in an animation state
+    if (isAnyCharacterInAnimation()) {
+        console.log("Character animation in progress, delaying turn processing...");
+        // Wait a bit and try again
+        setTimeout(() => {
+            turn();
+        }, 100);
+        return;
+    }
+
+    // Handle immediate turn if there is one pending
+    if (pendingImmediateTurn) {
+        await handleImmediateTurn();
+        return;
+    }
+
+    // ... rest of the function stays the same ...
+    
     // Get current character positions and use logic list for turn processing
     const characterPositions = getCharacterPositions();
     let sortedCharactersLogic = getSortedCharacters();
@@ -273,25 +326,11 @@ export async function turn() {
         return;
     }
     
-    // Start of a new round logic
-    if (currentTurn % sortedCharactersLogic.length === 0) {
-        // Reset taken turns tracker at the start of a new round
-        resetTakenTurnsTracker();
-        
-        // Clear all skipTurnThisRound flags from both logic and display lists
-        const sortedCharactersDisplay = getSortedCharactersDisplay();
-        sortedCharactersLogic.forEach(entry => {
-            if (entry.character) {
-                entry.character.skipTurnThisRound = false;
-            }
-        });
-        sortedCharactersDisplay.forEach(entry => {
-            if (entry.character) {
-                entry.character.skipTurnThisRound = false;
-            }
-        });
-        
-        logBattleEvent(`<div class="log-round-header">Neue Runde beginnt!</div>`, true);
+    // Check if all living Pokemon have taken their turn (new round detection)
+    if (shouldStartNewRound()) {
+        await startNewRound();
+        // Re-fetch the sorted characters list after class effects
+        sortedCharactersLogic = getSortedCharacters();
     }
 
     // Increment turn counter ONLY when processing a real turn
@@ -305,55 +344,209 @@ export async function turn() {
         return;
     }
     
-    // Calculate turn index based on the logic character list
-    let turnIndex = (currentTurn - 1) % sortedCharactersLogic.length;
-    let activeCharacter = sortedCharactersLogic[turnIndex];
+    // Check if we've reached turn 2000 (timeout)
+    if (currentTurn >= 2000) {
+        logBattleEvent(`<div class="log-turn-header">TIMEOUT! DER KAMPF ENDET UNENTSCHIEDEN!</div>`, true);
+        return;
+    }
     
-    // Since we only have alive characters in the logic list, we shouldn't need to skip any
-    // But let's keep a safety check for characters that should skip their turn
-    let charactersChecked = 0;
-    let activeCharId = null;
+    // Get the next Pokemon that should take their turn
+    const nextPokemon = getNextPokemonForTurn();
     
-    while (charactersChecked < sortedCharactersLogic.length) {
-        // Find the active character's ID using uniqueId
-        activeCharId = null;
-        for (const charId in characterPositions) {
-            if (characterPositions[charId].character && 
-                activeCharacter.character && 
-                characterPositions[charId].character.uniqueId === activeCharacter.character.uniqueId) {
-                activeCharId = charId;
-                break;
-            }
-        }
-        
-        // Double-check: Skip if character is defeated or should skip turn
-        if (!activeCharId || 
-            characterPositions[activeCharId].isDefeated || 
-            (activeCharacter.character && activeCharacter.character.skipTurnThisRound)) {
-            
-            // Clear the skip flag if we're skipping due to it
-            if (activeCharacter.character && activeCharacter.character.skipTurnThisRound) {
-                activeCharacter.character.skipTurnThisRound = false;
-                console.log(`${activeCharacter.character.name} skipped turn due to skipTurnThisRound flag`);
-            }
-            
-            turnIndex = (turnIndex + 1) % sortedCharactersLogic.length;
-            activeCharacter = sortedCharactersLogic[turnIndex];
-            charactersChecked++;
-        } else {
-            // Found a valid character to take their turn
+    if (!nextPokemon) {
+        console.warn('No Pokemon available for turn, forcing new round...');
+        await forceNewRound();
+        return;
+    }
+    
+    // Process the turn for the selected Pokemon
+    await processPokemonTurn(nextPokemon, characterPositions);
+}
+
+/**
+ * Handle an immediate turn for a pending Pokemon
+ */
+async function handleImmediateTurn() {
+    const sortedCharactersLogic = getSortedCharacters();
+    const characterPositions = getCharacterPositions();
+    
+    // Find the character with the pending immediate turn
+    const pendingCharacter = sortedCharactersLogic.find(
+        entry => entry.character && entry.character.uniqueId === pendingImmediateTurn
+    );
+    
+    // Find the character ID
+    let pendingCharId = null;
+    for (const charId in characterPositions) {
+        if (characterPositions[charId].character && 
+            characterPositions[charId].character.uniqueId === pendingImmediateTurn) {
+            pendingCharId = charId;
             break;
         }
     }
     
-    // If all characters should be skipped (shouldn't happen with our filtering), end battle
-    if (charactersChecked >= sortedCharactersLogic.length) {
-        logBattleEvent(`<div class="log-turn-header">DER KAMPF IST VORBEI - ALLE CHARAKTERE ÜBERSPRUNGEN!</div>`, true);
+    // Clear the pending immediate turn
+    const immediateTurnId = pendingImmediateTurn;
+    pendingImmediateTurn = null;
+    
+    // If character found and not defeated, give them a turn
+    if (pendingCharacter && pendingCharId && 
+        !characterPositions[pendingCharId].isDefeated) {
+        
+        // Check if this is a second turn
+        const turnsTaken = getTurnsTakenThisRound(immediateTurnId);
+        const isSecondTurn = turnsTaken === 1;
+        
+        // Log that this is a special immediate turn
+        if (isSecondTurn) {
+            logBattleEvent(`<div class="log-turn-header">${pendingCharacter.character.name} nimmt seinen zweiten Zug!</div>`, true);
+        } else {
+            logBattleEvent(`<div class="log-turn-header">${pendingCharacter.character.name} erhält einen sofortigen Zug!</div>`, true);
+        }
+        
+        // Mark this character as having taken its turn (but don't double mark for second turns)
+        if (!isSecondTurn) {
+            markTurnTaken(immediateTurnId);
+        }
+        
+        // Process the immediate turn
+        await executeCharacterTurn(pendingCharacter, pendingCharId, characterPositions);
+    }
+}
+
+/**
+ * Start a new round - reset trackers and handle round effects
+ */
+async function startNewRound() {
+    // Reset taken turns tracker at the start of a new round
+    resetTakenTurnsTracker();
+    
+    // Reset double turn counters
+    resetDoubleTurnCounters();
+    
+    // Calculate which Pokemon get double turns this round
+    calculateDoubleTurns();
+    
+    // Clear all skipTurnThisRound flags from both logic and display lists
+    const sortedCharactersDisplay = getSortedCharactersDisplay();
+    const sortedCharactersLogic = getSortedCharacters();
+    
+    sortedCharactersLogic.forEach(entry => {
+        if (entry.character) {
+            entry.character.skipTurnThisRound = false;
+        }
+    });
+    sortedCharactersDisplay.forEach(entry => {
+        if (entry.character) {
+            entry.character.skipTurnThisRound = false;
+        }
+    });
+
+    // Update weather at the end of each full round
+    const currentWeather = getCurrentWeather();
+    if (currentWeather.state !== "Normal" && currentWeather.timer > 0) {
+        reduceWeatherTimer();
+    }
+    
+    // Apply weather effects at the end of each full round
+    await applyWeatherEffects();
+    
+    // Log the new round with prominent styling
+    logBattleEvent(`<div class="log-round-header"><strong>Neue Runde beginnt!</strong></div>`, true);
+    
+    // Wait for all trainer class effects to complete before continuing
+    await startOfTurnClassCheck();
+    
+    // Re-fetch the sorted characters list after class effects
+    const updatedSortedCharactersLogic = getSortedCharacters();
+    
+    // Add a small delay to let players read the round start messages
+    await new Promise(resolve => setTimeout(resolve, 500));
+}
+
+/**
+ * Force a new round when no Pokemon are available for turns
+ */
+async function forceNewRound() {
+    resetTakenTurnsTracker();
+    
+    // Try again with the first character in initiative order
+    const sortedCharactersLogic = getSortedCharacters();
+    if (sortedCharactersLogic.length > 0) {
+        const firstPokemon = sortedCharactersLogic[0];
+        const characterPositions = getCharacterPositions();
+        await processPokemonTurn(firstPokemon, characterPositions);
+    } else {
+        logBattleEvent(`<div class="log-turn-header">DER KAMPF IST VORBEI - KEINE CHARAKTERE ÜBRIG!</div>`, true);
+    }
+}
+
+/**
+ * Process a turn for a specific Pokemon
+ * @param {Object} activeCharacter - The Pokemon to process the turn for
+ * @param {Object} characterPositions - Character positions object
+ */
+async function processPokemonTurn(activeCharacter, characterPositions) {
+    // Find the active character's ID using uniqueId
+    let activeCharId = null;
+    for (const charId in characterPositions) {
+        if (characterPositions[charId].character && 
+            characterPositions[charId].character.uniqueId === activeCharacter.character.uniqueId) {
+            activeCharId = charId;
+            break;
+        }
+    }
+    
+    // Double-check: Skip if character is defeated, should skip turn, OR is in animation
+    if (!activeCharId || 
+        characterPositions[activeCharId].isDefeated || 
+        (activeCharacter.character && activeCharacter.character.skipTurnThisRound) ||
+        isCharacterInAnimation(activeCharacter.character, characterPositions[activeCharId])) {
+        
+        // Handle skip scenarios
+        await handleSkippedTurn(activeCharacter);
         return;
     }
     
+    // Mark this character as having taken its turn this round
+    markTurnTaken(activeCharacter.character.uniqueId);
+    
+    // Execute the character's turn
+    await executeCharacterTurn(activeCharacter, activeCharId, characterPositions);
+}
+
+/**
+ * Handle a Pokemon that should skip their turn
+ * @param {Object} activeCharacter - The Pokemon skipping their turn
+ */
+async function handleSkippedTurn(activeCharacter) {
+    // Clear the skip flag if we're skipping due to it
+    if (activeCharacter.character && activeCharacter.character.skipTurnThisRound) {
+        // WALZER CHAIN: Break chain when Pokemon skips turn due to skipTurnThisRound
+        handleTurnChainBreaking(activeCharacter.character, 'skip');
+        
+        activeCharacter.character.skipTurnThisRound = false;
+    }
+    
+    // Mark as taken turn even though skipped
+    markTurnTaken(activeCharacter.character.uniqueId);
+    
+    // Continue to next turn
+    setTimeout(() => {
+        currentTurnEnded = false;
+        turn();
+    }, 50);
+}
+
+/**
+ * Execute the actual turn logic for a character
+ * @param {Object} activeCharacter - The Pokemon taking their turn
+ * @param {string} activeCharId - The character's ID on the battlefield
+ * @param {Object} characterPositions - Character positions object
+ */
+async function executeCharacterTurn(activeCharacter, activeCharId, characterPositions) {
+    // Reset swim check flags
     if (activeCharId) {
-        // Reset swim check flags
         characterPositions[activeCharId].hasPassedSwimmingCheck = false;
         if (characterPositions[activeCharId].character) {
             characterPositions[activeCharId].character.hasPassedSwimmingCheck = false;
@@ -367,197 +560,796 @@ export async function turn() {
     // Then log the regular turn message
     logBattleEvent(`${characterName} ist am Zug.`);
     
-    // Mark this character as having taken its turn this round
-    markTurnTaken(activeCharacter.character.uniqueId);
+    // WALZER CHAIN: Apply visual state if Pokemon is in a chain
+    if (isInWalzerChain(activeCharacter.character)) {
+        updateWalzerChainVisual(activeCharacter.character, true);
+    }
     
     // Highlight the active character
     highlightActiveCharacter(activeCharId);
     
-    // Focus camera on the active character
-    // Added camera focus for normal turns - AWAIT it to ensure camera movement completes
+    // Focus camera on the active character - AWAIT to ensure camera movement completes
     await focusOnCharacter(activeCharId);
     
     // Add delay AFTER camera arrives at its location
     await new Promise(resolve => setTimeout(resolve, 100));
     
     // Process status effects at start of turn
-    if (activeCharId) {
-        const statusMessages = processStatusEffectsStart(activeCharacter.character);
+    const statusMessages = processStatusEffectsStart(activeCharacter.character);
+    
+    // Log any status messages
+    statusMessages.forEach(message => {
+        logBattleEvent(message);
+    });
+    
+    // Skip turn if a status effect caused it
+    if (activeCharacter.character.skipTurn) {
+        // WALZER CHAIN: Break chain when Pokemon skips turn due to status effect
+        handleTurnChainBreaking(activeCharacter.character, 'skip');
         
-        // Log any status messages
-        statusMessages.forEach(message => {
-            logBattleEvent(message);
-        });
+        // Remove the flag for next turn
+        activeCharacter.character.skipTurn = false;
         
-        // Skip turn if a status effect caused it
-        if (activeCharacter.character.skipTurn) {
-            // Remove the flag for next turn
-            activeCharacter.character.skipTurn = false;
-            
-            // End turn immediately
-            setTimeout(() => {
-                unhighlightActiveCharacter();
-                endTurn(activeCharacter);
-            }, 100);
-            return;
-        }
-    }
-    
-    // Get character strategy
-    const strategy = characterPositions[activeCharId].character.strategy || 'aggressive';
-    
-    // Handle turn based on strategy
-    if (strategy === 'fleeing') {
-        handleFleeingStrategy(activeCharId, activeCharacter);
-    } else if (strategy === 'defensive') {
-        handleDefensiveStrategy(activeCharId, activeCharacter);
-    } else {
-        handleAggressiveStrategy(activeCharId, activeCharacter);
-    }
-}
-
-/**
- * Handle the fleeing strategy for a character's turn
- * @param {string} charId - The character's ID
- * @param {Object} activeCharacter - The character data
- */
-async function handleFleeingStrategy(charId, activeCharacter) {
-    // First check if the character should use a buff move
-    const usedBuffMove = await checkAndHandleBuffMove(charId, activeCharacter);
-    if (usedBuffMove) {
-        return; // Exit early, turn has been handled
-    }
-    
-    const characterPositions = getCharacterPositions();
-    
-    // FLEEING STRATEGY: Move first, then attack only after moving
-    
-    // Move character based on strategy
-    const newPosition = moveCharacterByStrategy(characterPositions[charId]);
-    
-    // If there's a path to follow, animate the movement
-    if (newPosition && newPosition.path && newPosition.path.length > 0) {
-        // Log the movement
-        logBattleEvent(`${activeCharacter.character.name} flieht und bewegt sich von den Gegnern weg.`);
-        
-        // Use the new movement processing function with terrain checks
-        processMovementWithTerrainChecks(charId, characterPositions[charId], newPosition.path, async () => {
-            // After movement completes (including terrain checks), check for possible attack
-            let hasAttacked = false; // Track if we've attacked already
-            
-            try {
-                const enemyInRangeAfterMove = await findNearestEnemyInRange(characterPositions[charId]);
-                
-                if (!hasAttacked && enemyInRangeAfterMove && enemyInRangeAfterMove.character) {
-                    hasAttacked = true; // Mark as attacked
-                    
-                    logBattleEvent(`${activeCharacter.character.name} prüft Angriffsmöglichkeit nach Bewegung... ${enemyInRangeAfterMove.character.name} ist in Reichweite (${enemyInRangeAfterMove.distance} Felder)!`);
-                    
-                    // Perform attack
-                    const attackResult = await performAttack(
-                        characterPositions[charId], 
-                        characterPositions[enemyInRangeAfterMove.id]
-                    );
-                    
-                    // Log attack results
-                    attackResult.log.forEach(logEntry => {
-                        logBattleEvent(logEntry);
-                    });
-                    
-                    // Update HP display
-                    updateInitiativeHP();
-                    
-                    // Check if target was defeated
-                    if (attackResult.success && characterPositions[enemyInRangeAfterMove.id].character.currentKP <= 0) {
-                        removeDefeatedCharacter(enemyInRangeAfterMove.id);
-                    }
-                }
-            } catch (error) {
-                console.error("Error checking for enemies after movement:", error);
-            }
-            
-            // End turn
-            setTimeout(() => {
-                unhighlightActiveCharacter();
-                endTurn(activeCharacter);
-            }, 100);
-        });
-    } else {
-        // No movement, check for attack
-        let hasAttacked = false; // Track if we've attacked already
-        
-        try {
-            const enemyInRange = await findNearestEnemyInRange(characterPositions[charId]);
-            
-            if (!hasAttacked && enemyInRange && enemyInRange.character) {
-                hasAttacked = true; // Mark as attacked
-                
-                logBattleEvent(`${activeCharacter.character.name} prüft Angriffsmöglichkeit... ${enemyInRange.character.name} ist in Reichweite (${enemyInRange.distance} Felder)!`);
-                
-                // Perform attack
-                const attackResult = await performAttack(
-                    characterPositions[charId], 
-                    characterPositions[enemyInRange.id]
-                );
-                
-                // Log attack results
-                attackResult.log.forEach(logEntry => {
-                    logBattleEvent(logEntry);
-                });
-                
-                // Update HP display
-                updateInitiativeHP();
-                
-                // Check if target was defeated
-                if (attackResult.success && characterPositions[enemyInRange.id].character.currentKP <= 0) {
-                    removeDefeatedCharacter(enemyInRange.id);
-                }
-            } else {
-                logBattleEvent(`${characterPositions[charId].character.name} kann sich nicht bewegen und findet kein Ziel zum Angreifen.`);
-            }
-        } catch (error) {
-            console.error("Error checking for enemies in range:", error);
-            logBattleEvent(`${characterPositions[charId].character.name} kann sich nicht bewegen und findet kein Ziel zum Angreifen.`);
-        }
-        
-        // End turn
+        // End turn immediately
         setTimeout(() => {
             unhighlightActiveCharacter();
             endTurn(activeCharacter);
-        }, 100);
+        }, STANDARD_TURN_END_DELAY);
+        return;
+    }
+    
+    // Get character strategy and execute turn based on it
+    const strategy = characterPositions[activeCharId].character.strategy || 'aggressive';
+    
+    await takeTurn(activeCharId, activeCharacter);
+}
+
+/**
+ * Enhanced performAttack wrapper that handles Walzer chains and respects pre-selected attacks
+ * @param {Object} attacker - Attacker character data
+ * @param {Object} target - Target character data
+ * @param {Object} preferredAttack - Optional pre-selected attack to use instead of getBestAttack
+ * @returns {Promise<Object>} - Attack results
+ */
+async function performAttackWithChainManagement(attacker, target, preferredAttack = null) {
+    let selectedAttack;
+    
+    if (preferredAttack) {
+        // Use the pre-selected attack (e.g., from status move selection)
+        selectedAttack = preferredAttack;
+    } else {
+        // Get the best attack that will be used (normal behavior)
+        selectedAttack = await getBestAttack(attacker, target);
+    }
+    
+    if (selectedAttack) {
+        const attackName = selectedAttack.weaponName;
+        
+        // WALZER CHAIN MANAGEMENT - Only break chains for non-Walzer attacks
+        // The increment is handled inside animateWalzer() in walzer.js
+        if (attackName !== "Walzer" && isInWalzerChain(attacker.character)) {
+            handleTurnChainBreaking(attacker.character, attackName);
+        }
+    }
+    
+    // If we have a preferred attack, use forced attack selection
+    if (preferredAttack) {
+        return await performAttackWithForcedSelection(attacker, target, preferredAttack);
+    } else {
+        // Normal attack behavior
+        return await performAttack(attacker, target);
     }
 }
 
 /**
- * Handle the defensive strategy for a character's turn
+ * Handle the revised turn strategy for a character's turn with 5-phase combat
  * @param {string} charId - The character's ID
  * @param {Object} activeCharacter - The character data
  */
-async function handleDefensiveStrategy(charId, activeCharacter) {
-    // First check if the character should use a buff move
-    const usedBuffMove = await checkAndHandleBuffMove(charId, activeCharacter);
-    if (usedBuffMove) {
+async function takeTurn(charId, activeCharacter) {
+    // First: Weather Moves. Then: Buff Moves.
+    let usedWeather = await checkAndHandleSonnentag(charId, activeCharacter);
+    if (usedWeather) {
+        return; // Exit early, turn has been handled
+    }
+    usedWeather = await checkAndHandleRegentanz(charId, activeCharacter);
+    if (usedWeather) {
+        return; // Exit early, turn has been handled
+    }
+    usedWeather = await checkAndHandleSandsturm(charId, activeCharacter);
+    if (usedWeather) {
+        return; // Exit early, turn has been handled
+    }
+    usedWeather = await checkAndHandleHagelsturm(charId, activeCharacter);
+    if (usedWeather) {
+        return; // Exit early, turn has been handled
+    }
+    usedWeather = await checkAndHandleSchneelandschaft(charId, activeCharacter);
+    if (usedWeather) {
         return; // Exit early, turn has been handled
     }
     
     const characterPositions = getCharacterPositions();
     
-    // DEFENSIVE STRATEGY (STANDHAFT)
-    // For defensive strategy: Check if we can attack without moving first
-    let hasAttacked = false;
+    // Check if character is snared - prevent movement if so
+    if (hasStatusEffect(activeCharacter.character, 'snared')) {
+        logBattleEvent(`${activeCharacter.character.name} ist verstrickt und kann sich nicht bewegen!`);
+        
+        // Can't move, but can still try to attack from current position
+        await handleSnaredTurn(charId, activeCharacter, characterPositions);
+        return;
+    }
+
+    // Handle confusion - target allies instead of enemies if confused
+    if (activeCharacter.character.isConfused) {
+        await handleConfusedTurn(charId, activeCharacter, characterPositions);
+        return;
+    }
     
+    // === 5-PHASE COMBAT SYSTEM ===
+    await executeFivePhaseCombat(charId, activeCharacter, characterPositions);
+}
+
+/**
+ * Execute the 5-phase combat system with enhanced status move selection,
+ * integrated buff move handling, aiming strategy support, and opportunistic strategy
+ * @param {string} charId - The character's ID
+ * @param {Object} activeCharacter - The character data
+ * @param {Object} characterPositions - Character positions object
+ */
+async function executeFivePhaseCombat(charId, activeCharacter, characterPositions) {
+    // === PHASE 0: BUFF MOVE CHECK (highest priority) ===
+    // Calculate probability of using a buff move
+    let buffProbability = 0.05; // Base 5% chance
+    
+    // Get the base stat total
+    const baseStatTotal = activeCharacter.character.statsDetails?.baseStatTotal || 500; // Default to 500 if not available
+    
+    // For every full 80 points below 600, add 10% probability
+    const pointsBelow600 = Math.max(0, 600 - baseStatTotal);
+    const additionalProbability = Math.floor(pointsBelow600 / 80) * 0.10;
+    buffProbability += additionalProbability;
+    
+    // Triple probability for "Verstärkend" strategy
+    if (activeCharacter.character.strategy === 'reinforcing') {
+        buffProbability *= 3;
+    }
+    
+    // Cap at 80%
+    buffProbability = Math.min(buffProbability, 0.8);
+    
+    // Roll for buff move
+    const buffRoll = Math.random();
+    if (buffRoll <= buffProbability) {
+        // Try to find a valid buff move
+        const buffMoves = (activeCharacter.character.attacks || []).filter(attack => 
+            attack.buff === true && 
+            (attack.currentPP === undefined || attack.currentPP > 0)
+        );
+        
+        // Shuffle buff moves to select a random one
+        const shuffledBuffMoves = [...buffMoves].sort(() => Math.random() - 0.5);
+        
+        // Look for a valid buff move (where not all stats are at +6)
+        let validBuffMove = null;
+        
+        for (const move of shuffledBuffMoves) {
+            if (move.buffedStats && move.buffedStats.length > 0) {
+                // Check if any of the stats are not at max stage (+6)
+                const hasNonMaxedStat = move.buffedStats.some(statName => {
+                    const normalizedStatName = normalizeStatName(statName);
+                    const currentStage = getCurrentStage(activeCharacter.character, normalizedStatName);
+                    return currentStage < 6; // Not at max stage
+                });
+                
+                if (hasNonMaxedStat) {
+                    validBuffMove = move;
+                    break;
+                }
+            } else {
+                // If no specific stats are listed, assume it's a valid buff move
+                validBuffMove = move;
+                break;
+            }
+        }
+        
+        // If we found a valid buff move, use it and end turn
+        if (validBuffMove) {
+            // WALZER CHAIN: Break chain when using a buff move instead of attacking
+            if (isInWalzerChain(activeCharacter.character)) {
+                handleTurnChainBreaking(activeCharacter.character, validBuffMove.weaponName);
+            }
+            
+            // Apply the buff move (this is awaited and includes animations)
+            await applyBuffMove(charId, activeCharacter.character, validBuffMove);
+            
+            const finalPos = characterPositions[charId];
+            updatePokemonPosition(charId, finalPos.x, finalPos.y);
+
+            // FIXED: Extended delay for buff moves to account for animations
+            setTimeout(() => {
+                unhighlightActiveCharacter();
+                endTurn(activeCharacter);
+            }, POST_ATTACK_DELAY); // 500ms delay after buff moves
+            return; // Exit early - buff move takes precedence over everything else
+        }
+    }
+    
+    // === STRATEGY-BASED TARGET SELECTION ===
+    const pokemonStrategy = activeCharacter.character.strategy;
+    let nearestEnemy;
+    let selectedMove = null;
+    let bestAttack = null;
+    let isSpecialStrategy = false;
+    
+    // OPPORTUNISTIC STRATEGY - Highest priority for target selection
+    if (pokemonStrategy === 'opportunistic' || pokemonStrategy === 'opportunistisch') {
+        // Use opportunistic strategy to select optimal target and attack combination
+        const opportunisticResult = await selectOpportunisticTarget(charId, activeCharacter, characterPositions);
+        
+        if (opportunisticResult) {
+            nearestEnemy = opportunisticResult.target;
+            selectedMove = opportunisticResult.attack;
+            bestAttack = opportunisticResult.attack;
+            isSpecialStrategy = true;
+            
+            logBattleEvent(`${activeCharacter.character.name} verwendet Opportunistik-Strategie: ${selectedMove.weaponName} gegen ${nearestEnemy.character.name}.`);
+        } else {
+            // Fall back to nearest enemy if no opportunistic target found
+            nearestEnemy = findNearestEnemy(
+                activeCharacter.character, 
+                characterPositions[charId].teamIndex, 
+                characterPositions[charId].x, 
+                characterPositions[charId].y
+            );
+        }
+    }
+    // AIMING STRATEGY
+    else if (pokemonStrategy === 'aiming' || pokemonStrategy === 'zielend') {
+        // Use aiming strategy to select optimal target and attack
+        const aimingResult = await selectAimingTarget(charId, activeCharacter, characterPositions);
+        
+        if (aimingResult) {
+            nearestEnemy = aimingResult.target;
+            selectedMove = aimingResult.attack;
+            bestAttack = aimingResult.attack;
+            isSpecialStrategy = true;
+            
+            logBattleEvent(`${activeCharacter.character.name} verwendet Zielen-Strategie: ${selectedMove.weaponName} gegen ${nearestEnemy.character.name}.`);
+        } else {
+            // Fall back to nearest enemy if no aiming target found
+            nearestEnemy = findNearestEnemy(
+                activeCharacter.character, 
+                characterPositions[charId].teamIndex, 
+                characterPositions[charId].x, 
+                characterPositions[charId].y
+            );
+        }
+    } else {
+        // === NORMAL TARGET SELECTION ===
+        nearestEnemy = findNearestEnemy(
+            activeCharacter.character, 
+            characterPositions[charId].teamIndex, 
+            characterPositions[charId].x, 
+            characterPositions[charId].y
+        );
+    }
+    
+    if (!nearestEnemy) {
+        logBattleEvent(`${activeCharacter.character.name} findet kein Ziel zum Angreifen.`);
+        setTimeout(() => {
+            unhighlightActiveCharacter();
+            endTurn(activeCharacter);
+        }, STANDARD_TURN_END_DELAY);
+        return;
+    }
+    
+    // === MOVE SELECTION (skip if special strategy already selected move) ===
+    if (!isSpecialStrategy) {
+        // === SUPPORTING STRATEGY LOGIC ===
+        if (pokemonStrategy === 'unterstützend' || pokemonStrategy === 'supporting') {
+            // Check for support moves first
+            const supportMoves = findSupportMoves(activeCharacter.character);
+            
+            if (supportMoves.length > 0) {
+                // Always use a support move if available
+                const randomIndex = Math.floor(Math.random() * supportMoves.length);
+                selectedMove = supportMoves[randomIndex];
+                
+                bestAttack = await getBestAttackWithStatusLogic(
+                    characterPositions[charId],
+                    characterPositions[nearestEnemy.id],
+                    selectedMove
+                );
+                
+                logBattleEvent(`${activeCharacter.character.name} verwendet Unterstützungsattacke ${selectedMove.weaponName}.`);
+            } else {
+                // No support moves available, use random attack
+                const randomAttack = getRandomValidAttack(activeCharacter.character);
+                
+                if (randomAttack) {
+                    selectedMove = randomAttack;
+                    bestAttack = await getBestAttackWithStatusLogic(
+                        characterPositions[charId],
+                        characterPositions[nearestEnemy.id],
+                        selectedMove
+                    );
+                    
+                    logBattleEvent(`${activeCharacter.character.name} hat keine Unterstützungsattacken und wählt zufällig ${selectedMove.weaponName} gegen ${nearestEnemy.character.name}.`);
+                }
+            }
+        }
+        // === NORMAL STATUS MOVE LOGIC (for non-supporting Pokemon) ===
+        else {
+            // Check if Pokemon should use a status move
+            const statusMoveDecision = shouldUseStatusMove(activeCharacter.character);
+            
+            if (statusMoveDecision.shouldUseStatus && statusMoveDecision.selectedMove) {
+                // Use the selected status move
+                selectedMove = statusMoveDecision.selectedMove;
+                bestAttack = await getBestAttackWithStatusLogic(
+                    characterPositions[charId],
+                    characterPositions[nearestEnemy.id],
+                    selectedMove
+                );
+                
+                logBattleEvent(`${activeCharacter.character.name} entscheidet sich für Statusattacke ${selectedMove.weaponName} gegen ${nearestEnemy.character.name} (Entfernung: ${nearestEnemy.distance}).`);
+            } else {
+                // Use normal offensive move selection
+                bestAttack = await getBestAttack(
+                    characterPositions[charId],
+                    characterPositions[nearestEnemy.id]
+                );
+                
+                if (bestAttack) {
+                    logBattleEvent(`${activeCharacter.character.name} wählt ${bestAttack.weaponName} gegen ${nearestEnemy.character.name} (Entfernung: ${nearestEnemy.distance}).`);
+                }
+            }
+        }
+    }
+    
+    if (!bestAttack) {
+        logBattleEvent(`${activeCharacter.character.name} hat keine verfügbaren Attacken gegen ${nearestEnemy.character.name}.`);
+        setTimeout(() => {
+            unhighlightActiveCharacter();
+            endTurn(activeCharacter);
+        }, STANDARD_TURN_END_DELAY);
+        return;
+    }
+
+    if (!bestAttack.range) {
+        console.warn(`Attack ${bestAttack.weaponName} missing range property, defaulting to 1`);
+        bestAttack.range = 1;
+    }
+    
+    let hasAttacked = false;
+
+    // === PHASE 1: Attack immediately if in range ===
+    const effectiveRangeForPhase1 = getEffectiveRangeForTurnLogic(bestAttack);
+    if (nearestEnemy.distance <= effectiveRangeForPhase1) {
+        // Check line of sight for ranged attacks
+        if (bestAttack.type === 'ranged') {
+            const isBlocked = isLineOfSightBlockedByAlly(characterPositions[charId], characterPositions[nearestEnemy.id]);
+            if (isBlocked) {
+                logBattleEvent(`${activeCharacter.character.name} hat keine freie Schusslinie zu ${nearestEnemy.character.name}.`);
+            } else {
+                await executePhase1Attack(charId, activeCharacter, nearestEnemy, bestAttack, characterPositions);
+                hasAttacked = true;
+            }
+        } else {
+            // Melee attack - always possible if in range
+            await executePhase1Attack(charId, activeCharacter, nearestEnemy, bestAttack, characterPositions);
+            hasAttacked = true;
+        }
+    }
+    
+    // === PHASE 2: Movement to optimal range (enhanced for supporting strategy) ===
+    await executePhase2MoveToMaxRange(charId, activeCharacter, nearestEnemy, bestAttack, characterPositions);
+    
+    // === PHASE 3: Attack after movement (if didn't attack in Phase 1) ===
+    if (!hasAttacked) {
+        const updatedDistance = calculateMinDistanceBetweenPokemon(
+            characterPositions[charId],
+            characterPositions[nearestEnemy.id]
+        );
+        
+        const effectiveRangeForPhase3 = getEffectiveRangeForTurnLogic(bestAttack);
+        if (updatedDistance <= effectiveRangeForPhase3) {
+            // Check line of sight again for ranged attacks  
+            if (bestAttack.type === 'ranged') {
+                const isBlocked = isLineOfSightBlockedByAlly(characterPositions[charId], characterPositions[nearestEnemy.id]);
+                if (!isBlocked) {
+                    await executePhase3Attack(charId, activeCharacter, nearestEnemy, bestAttack, characterPositions);
+                    hasAttacked = true;
+                }
+            } else {
+                await executePhase3Attack(charId, activeCharacter, nearestEnemy, bestAttack, characterPositions);
+                hasAttacked = true;
+            }
+        }
+    }
+    
+    // === PHASE 4: Enhanced fallback attack (highest range move regardless of type) ===
+    if (!hasAttacked) {
+        await executePhase4FallbackAttack(charId, activeCharacter, nearestEnemy, characterPositions);
+        hasAttacked = true; // Set flag regardless of success
+    }
+    
+    // FIXED: Extended delay for combat turns to account for attack animations
+    setTimeout(() => {
+        unhighlightActiveCharacter();
+        endTurn(activeCharacter);
+    }, POST_ATTACK_DELAY); // 500ms delay after attacks
+}
+
+/**
+ * Execute Phase 1 attack (immediate attack if in range)
+ */
+async function executePhase1Attack(charId, activeCharacter, nearestEnemy, bestAttack, characterPositions) {
+    logBattleEvent(`${activeCharacter.character.name} greift sofort ${nearestEnemy.character.name} an!`);
+    
+    // Perform attack with chain management
+    const attackResult = await performAttackWithChainManagement(
+        characterPositions[charId], 
+        characterPositions[nearestEnemy.id],
+        bestAttack  // Pass the pre-selected attack
+    );
+    
+    // Log attack results
+    attackResult.log.forEach(logEntry => {
+        logBattleEvent(logEntry);
+    });
+    
+    // Update HP display
+    updateInitiativeHP();
+    
+    // EXPLOSION SELF-DEFEAT CHECK
+    if (activeCharacter.character.currentKP <= 0) {
+        logBattleEvent(`${activeCharacter.character.name} wurde durch seinen eigenen Angriff besiegt!`);
+        setTimeout(() => {
+            unhighlightActiveCharacter();
+            endTurn(activeCharacter);
+        }, STANDARD_TURN_END_DELAY);
+        return;
+    }
+}
+
+/**
+ * Execute Phase 2 movement to optimal range (now supports fleeing strategy)
+ * Moves Pokemon to be exactly at their attack's max range from the target, 
+ * OR away from all enemies if using fleeing strategy
+ * @param {string} charId - The character's ID
+ * @param {Object} activeCharacter - The character data
+ * @param {Object} nearestEnemy - The target enemy data
+ * @param {Object} bestAttack - The selected attack
+ * @param {Object} characterPositions - Character positions object
+ */
+async function executePhase2MoveToMaxRange(charId, activeCharacter, nearestEnemy, bestAttack, characterPositions) {
+    const currentPos = characterPositions[charId];
+
+    // Enhanced animation check - now uses unified system
+    if (isCharacterInAnimation(activeCharacter.character, currentPos) || 
+        areAttacksInProgress()) {
+        return;
+    }
+
+    const pokemonStrategy = activeCharacter.character.strategy;
+    
+    // Check if this Pokemon has fleeing strategy
+    if (pokemonStrategy === 'fleeing') {
+        // Check if ALL team members have fleeing strategy
+        const allTeamFleeing = areAllTeamMembersFleeing(currentPos.teamIndex, characterPositions);
+        
+        if (!allTeamFleeing) {
+            // This Pokemon has fleeing strategy but not all team members do
+            // So it should flee away from enemies
+            logBattleEvent(`Phase 2: ${activeCharacter.character.name} flieht vor den Gegnern.`);
+            
+            const attackerSize = calculateSizeCategory(activeCharacter.character);
+            const fleePosition = findFurthestTileFromEnemies(
+                currentPos.teamIndex, 
+                characterPositions, 
+                attackerSize, 
+                currentPos
+            );
+            
+            if (fleePosition) {
+                // Calculate the movement range based on character's BW stat
+                const movementRange = calculateMovementRange(
+                    activeCharacter.character.combatStats?.bw || 1
+                );
+                
+                // Find the best path to the flee position using pathfinding
+                const path = findPathToTarget(
+                    currentPos.x, 
+                    currentPos.y,
+                    fleePosition.x, 
+                    fleePosition.y,
+                    movementRange,
+                    activeCharacter.character,
+                    charId
+                );
+                
+                // Execute movement if path exists
+                if (path && path.path && path.path.length > 0) {
+                    await new Promise(resolve => {
+                        processMovementWithTerrainChecks(charId, characterPositions[charId], path.path, () => {
+                            const finalPos = characterPositions[charId];
+                            updatePokemonPosition(charId, finalPos.x, finalPos.y);
+                            resolve();
+                        });
+                    });
+                    logBattleEvent(`${activeCharacter.character.name} flieht zu einer sicheren Position.`);
+                } else {
+                    logBattleEvent(`${activeCharacter.character.name} kann nicht weiter fliehen und bleibt stehen.`);
+                }
+            } else {
+                logBattleEvent(`${activeCharacter.character.name} findet keine sichere Position zum Fliehen.`);
+            }
+            return; // Exit early for fleeing behavior
+        } else {
+            // All team members are fleeing, so this Pokemon feels cornered and fights normally
+            logBattleEvent(`Phase 2: ${activeCharacter.character.name} fühlt sich in die Ecke gedrängt und kämpft normal.`);
+        }
+    }
+    
+    // Normal movement logic for non-fleeing or cornered fleeing Pokemon
+    const effectiveRange = getEffectiveRangeForTurnLogic(bestAttack);
+    logBattleEvent(`Phase 2: ${activeCharacter.character.name} bewegt sich zur optimalen Reichweite (${effectiveRange} Felder).`);
+    
+    // Calculate Pokemon size to account for multi-tile occupation
+    const attackerSize = calculateSizeCategory(activeCharacter.character);
+    const targetPos = characterPositions[nearestEnemy.id];
+    
+    // Find the optimal position that places the Pokemon at exactly the attack's effective range
+    const optimalPosition = findOptimalRangePosition(
+        currentPos, 
+        targetPos, 
+        effectiveRange, 
+        attackerSize, 
+        characterPositions
+    );
+    
+    if (optimalPosition) {
+        // Calculate the movement range based on character's BW stat
+        const movementRange = calculateMovementRange(
+            activeCharacter.character.combatStats?.bw || 1
+        );
+        
+        // Find the best path to the optimal position using pathfinding
+        const path = findPathToTarget(
+            currentPos.x, 
+            currentPos.y,
+            optimalPosition.x, 
+            optimalPosition.y,
+            movementRange,
+            activeCharacter.character,
+            charId
+        );
+        
+        // Execute movement if path exists
+        if (path && path.path && path.path.length > 0) {
+            await new Promise(resolve => {
+                processMovementWithTerrainChecks(charId, characterPositions[charId], path.path, () => {
+                    resolve();
+                });
+            });
+            logBattleEvent(`${activeCharacter.character.name} erreicht die optimale Position.`);
+        } else {
+            logBattleEvent(`${activeCharacter.character.name} kann die optimale Position nicht erreichen.`);
+        }
+    } else {
+        logBattleEvent(`${activeCharacter.character.name} findet keine optimale Position und bleibt stehen.`);
+    }
+}
+
+/**
+ * Find the optimal position for a Pokemon to be at exactly the specified range from target
+ * Takes Pokemon size into account to ensure proper positioning
+ * @param {Object} currentPos - Current position data
+ * @param {Object} targetPos - Target position data  
+ * @param {number} desiredRange - Desired distance from target
+ * @param {number} pokemonSize - Size category of the Pokemon (1, 2, 3, etc.)
+ * @param {Object} characterPositions - All character positions for collision checking
+ * @returns {Object|null} - Optimal position {x, y} or null if none found
+ */
+function findOptimalRangePosition(currentPos, targetPos, desiredRange, pokemonSize, characterPositions) {
+    const candidates = [];
+    const targetCenterX = targetPos.x;
+    const targetCenterY = targetPos.y;
+    
+    // Search in expanding rings around the target at the desired range
+    const searchRadius = Math.max(desiredRange + pokemonSize, 10); // Ensure we search wide enough
+    
+    for (let x = targetCenterX - searchRadius; x <= targetCenterX + searchRadius; x++) {
+        for (let y = targetCenterY - searchRadius; y <= targetCenterY + searchRadius; y++) {
+            // Skip if position is out of bounds
+            if (x < 0 || y < 0 || x >= GRID_SIZE || y >= GRID_SIZE) continue;
+            
+            // Check if this position would place the Pokemon at the desired range
+            const testPos = { x, y, character: currentPos.character };
+            const distanceToTarget = calculateMinDistanceBetweenPokemon(testPos, targetPos);
+            
+            // We want positions where the closest tile is exactly at desired range
+            if (distanceToTarget === desiredRange) {
+                // Check if this position is valid (no collisions, within bounds)
+                if (isValidPokemonPosition(x, y, pokemonSize, characterPositions, currentPos)) {
+                    // Calculate distance from current position for prioritization
+                    const distanceFromCurrent = Math.abs(x - currentPos.x) + Math.abs(y - currentPos.y);
+                    candidates.push({
+                        x: x,
+                        y: y,
+                        distanceFromCurrent: distanceFromCurrent,
+                        distanceToTarget: distanceToTarget
+                    });
+                }
+            }
+        }
+    }
+    
+    if (candidates.length === 0) {
+        return null;
+    }
+    
+    // Sort by distance from current position (prefer closer moves)
+    candidates.sort((a, b) => {
+        // First priority: closer to current position
+        if (a.distanceFromCurrent !== b.distanceFromCurrent) {
+            return a.distanceFromCurrent - b.distanceFromCurrent;
+        }
+        // Second priority: exact range match (should all be equal due to filtering above)
+        return Math.abs(a.distanceToTarget - desiredRange) - Math.abs(b.distanceToTarget - desiredRange);
+    });
+    
+    return { x: candidates[0].x, y: candidates[0].y };
+}
+
+/**
+ * Check if a position is valid for a Pokemon of given size
+ * @param {number} x - X coordinate
+ * @param {number} y - Y coordinate  
+ * @param {number} size - Size category of Pokemon
+ * @param {Object} characterPositions - All character positions
+ * @param {Object} excludePos - Position to exclude from collision checking (current Pokemon)
+ * @returns {boolean} - Whether position is valid
+ */
+export function isValidPokemonPosition(x, y, size, characterPositions, excludePos = null) {
+    // Check all tiles that this Pokemon would occupy
+    for (let dx = 0; dx < size; dx++) {
+        for (let dy = 0; dy < size; dy++) {
+            const checkX = x + dx;
+            const checkY = y + dy;
+            
+            // Check bounds
+            if (checkX < 0 || checkY < 0 || checkX >= GRID_SIZE || checkY >= GRID_SIZE) {
+                return false;
+            }
+            
+            // Check for collision with other Pokemon
+            for (const charId in characterPositions) {
+                const otherPos = characterPositions[charId];
+                
+                // Skip self and defeated Pokemon
+                if (otherPos === excludePos || otherPos.isDefeated) continue;
+                
+                // Check if any tile of the other Pokemon overlaps with our check position
+                if (doesPokemonOccupyTile(otherPos, checkX, checkY)) {
+                    return false;
+                }
+            }
+        }
+    }
+    
+    return true;
+}
+
+/**
+ * Execute Phase 3 attack (after movement, if didn't attack in Phase 1)
+ */
+async function executePhase3Attack(charId, activeCharacter, nearestEnemy, bestAttack, characterPositions) {    
+    // Perform attack with chain management
+    const attackResult = await performAttackWithChainManagement(
+        characterPositions[charId], 
+        characterPositions[nearestEnemy.id],
+        bestAttack  // Pass the pre-selected attack
+    );
+    
+    // Log attack results
+    attackResult.log.forEach(logEntry => {
+        logBattleEvent(logEntry);
+    });  
+
+    // Update HP display
+    updateInitiativeHP();
+    
+    // EXPLOSION SELF-DEFEAT CHECK
+    if (activeCharacter.character.currentKP <= 0) {
+        logBattleEvent(`${activeCharacter.character.name} wurde durch seinen eigenen Angriff besiegt!`);
+        setTimeout(() => {
+            unhighlightActiveCharacter();
+        }, STANDARD_TURN_END_DELAY);
+        return;
+    }
+}
+
+/**
+ * Execute Phase 4 fallback attack (try longest range attack if primary attack failed)
+ */
+async function executePhase4FallbackAttack(charId, activeCharacter, nearestEnemy, characterPositions) {
+    // Find the attack with the longest range that has PP
+    const validAttacks = (activeCharacter.character.attacks || []).filter(attack => {
+        return attack.weaponName === "Verzweifler" || 
+               (attack.pp === undefined || attack.currentPP === undefined || attack.currentPP > 0);
+    });
+    
+    if (validAttacks.length === 0) {
+        logBattleEvent(`Phase 4: ${activeCharacter.character.name} hat keine verfügbaren Angriffe mehr.`);
+        return;
+    }
+    
+    // Sort by range (highest first)
+    validAttacks.sort((a, b) => (b.range || 1) - (a.range || 1));
+    const longestRangeAttack = validAttacks[0];
+    
+    const currentDistance = calculateMinDistanceBetweenPokemon(
+        characterPositions[charId],
+        characterPositions[nearestEnemy.id]
+    );
+    
+    const effectiveRangeForPhase4 = getEffectiveRangeForTurnLogic(longestRangeAttack);
+    if (currentDistance <= effectiveRangeForPhase4) {
+        // Check line of sight for ranged attacks
+        if (longestRangeAttack.type === 'ranged') {
+            const isBlocked = isLineOfSightBlockedByAlly(characterPositions[charId], characterPositions[nearestEnemy.id]);
+            if (isBlocked) {
+                logBattleEvent(`Phase 4: ${activeCharacter.character.name} hat keine freie Schusslinie für ${longestRangeAttack.weaponName}.`);
+                return;
+            }
+        }
+        
+        logBattleEvent(`Phase 4: ${activeCharacter.character.name} verwendet ${longestRangeAttack.weaponName} als Notfall-Angriff!`);
+        
+        // Perform fallback attack with chain management
+        const attackResult = await performAttackWithChainManagement(
+            characterPositions[charId], 
+            characterPositions[nearestEnemy.id],
+            longestRangeAttack  // Pass the pre-selected attack
+        );
+        
+        // Log attack results
+        attackResult.log.forEach(logEntry => {
+            logBattleEvent(logEntry);
+        });
+        
+        // Update HP display
+        updateInitiativeHP();
+        
+        // EXPLOSION SELF-DEFEAT CHECK
+        if (activeCharacter.character.currentKP <= 0) {
+            logBattleEvent(`${activeCharacter.character.name} wurde durch seinen eigenen Angriff besiegt!`);
+            setTimeout(() => {
+                unhighlightActiveCharacter();
+                endTurn(activeCharacter);
+            }, STANDARD_TURN_END_DELAY);
+            return;
+        }
+    } else {
+        logBattleEvent(`Phase 4: ${activeCharacter.character.name} kann auch mit ${longestRangeAttack.weaponName} nicht angreifen (Entfernung: ${currentDistance}, Reichweite: ${effectiveRangeForPhase4}).`);
+    }
+}
+
+/**
+ * Handle turn for snared Pokemon (can't move but can attack)
+ */
+async function handleSnaredTurn(charId, activeCharacter, characterPositions) {
     try {
-        // Check if any enemies are in range from current position
         const enemyInRange = await findNearestEnemyInRange(characterPositions[charId]);
         
-        // If enemy in range, attack immediately without moving
         if (enemyInRange && enemyInRange.character) {
-            hasAttacked = true;
+            logBattleEvent(`${activeCharacter.character.name} ist verstrickt, greift aber aggressiv ${enemyInRange.character.name} an!`);
             
-            logBattleEvent(`${activeCharacter.character.name} bleibt standhaft und greift ${enemyInRange.character.name} an.`);
-            
-            // Perform attack from current position
-            const attackResult = await performAttack(
+            // Perform attack with chain management
+            const attackResult = await performAttackWithChainManagement(
                 characterPositions[charId], 
                 characterPositions[enemyInRange.id]
             );
@@ -569,289 +1361,59 @@ async function handleDefensiveStrategy(charId, activeCharacter) {
             
             // Update HP display
             updateInitiativeHP();
-            
-            // Check if target was defeated
-            if (attackResult.success && characterPositions[enemyInRange.id].character.currentKP <= 0) {
-                removeDefeatedCharacter(enemyInRange.id);
-            }
-            
-            // For defensive strategy, end turn after successful attack
-            setTimeout(() => {
-                unhighlightActiveCharacter();
-                endTurn(activeCharacter);
-            }, 100);
-            return;
+        } else {
+            logBattleEvent(`${activeCharacter.character.name} ist verstrickt und findet kein Ziel zum Angreifen.`);
         }
     } catch (error) {
         console.error("Error checking for enemies in range:", error);
     }
     
-    // No attack possible from current position, try to move (with half movement)
-    if (!hasAttacked) {
-        // Apply half movement modifier for defensive character
-        characterPositions[charId].moveModifier = 0.5;
-        
-        // Calculate movement based on strategy (will find optimal position)
-        const newPosition = moveCharacterByStrategy(characterPositions[charId]);
-        
-        // Clean up the movement modifier
-        delete characterPositions[charId].moveModifier;
-        
-        // If there's a path to follow, animate the movement
-        if (newPosition && newPosition.path && newPosition.path.length > 0) {
-            logBattleEvent(`${activeCharacter.character.name} bewegt sich vorsichtig zur optimalen Angriffsposition (halbe Bewegung).`);
-            
-            // Use terrain-aware movement
-            processMovementWithTerrainChecks(charId, characterPositions[charId], newPosition.path, async () => {
-                // After movement, check for attack
-                try {
-                    const enemyInRangeAfterMove = await findNearestEnemyInRange(characterPositions[charId]);
-                    
-                    if (enemyInRangeAfterMove && enemyInRangeAfterMove.character) {
-                        logBattleEvent(`${activeCharacter.character.name} prüft Angriffsmöglichkeit nach Bewegung... ${enemyInRangeAfterMove.character.name} ist in Reichweite (${enemyInRangeAfterMove.distance} Felder)!`);
-                        
-                        // Perform attack
-                        const attackResult = await performAttack(
-                            characterPositions[charId], 
-                            characterPositions[enemyInRangeAfterMove.id]
-                        );
-                        
-                        // Log attack results
-                        attackResult.log.forEach(logEntry => {
-                            logBattleEvent(logEntry);
-                        });
-                        
-                        // Update HP display
-                        updateInitiativeHP();
-                        
-                        // Check if target was defeated
-                        if (attackResult.success && characterPositions[enemyInRangeAfterMove.id].character.currentKP <= 0) {
-                            removeDefeatedCharacter(enemyInRangeAfterMove.id);
-                        }
-                    } else {
-                        logBattleEvent(`${activeCharacter.character.name} findet kein Ziel zum Angreifen nach der Bewegung.`);
-                    }
-                } catch (error) {
-                    console.error("Error checking for enemies after movement:", error);
-                }
-                
-                // End turn
-                setTimeout(() => {
-                    unhighlightActiveCharacter();
-                    endTurn(activeCharacter);
-                }, 100);
-            });
-        } else {
-            // No movement possible
-            logBattleEvent(`${activeCharacter.character.name} bleibt standhaft und findet kein Ziel zum Angreifen.`);
-            
-            // End turn
-            setTimeout(() => {
-                unhighlightActiveCharacter();
-                endTurn(activeCharacter);
-            }, 100);
-        }
-    }
+    // FIXED: Use POST_ATTACK_DELAY for snared turns too
+    setTimeout(() => {
+        unhighlightActiveCharacter();
+        endTurn(activeCharacter);
+    }, POST_ATTACK_DELAY);
 }
 
 /**
- * Handle the aggressive strategy for a character's turn
- * @param {string} charId - The character's ID
- * @param {Object} activeCharacter - The character data
+ * Handle turn for confused Pokemon (attacks allies)
  */
-async function handleAggressiveStrategy(charId, activeCharacter) {
-    // First check if the character should use a buff move
-    const usedBuffMove = await checkAndHandleBuffMove(charId, activeCharacter);
-    if (usedBuffMove) {
-        return; // Exit early, turn has been handled
-    }
-    
-    const characterPositions = getCharacterPositions();
-    
-    // AGGRESSIVE STRATEGY - Continue with normal aggressive behavior
-    let hasAttacked = false;
+async function handleConfusedTurn(charId, activeCharacter, characterPositions) {
+    // Clear the confusion flag for this turn's processing
+    activeCharacter.character.isConfused = false;
     
     try {
-        // First check if any enemies are in range from current position
-        const enemyInRange = await findNearestEnemyInRange(characterPositions[charId]);
+        // Look for ally targets instead of enemies
+        const allyInRange = await findNearestAllyInRange(characterPositions[charId], charId);
         
-        // If enemy in range, attack immediately before moving
-        if (enemyInRange && enemyInRange.character) {
-            hasAttacked = true;
+        if (allyInRange && allyInRange.character) {
+            logBattleEvent(`${activeCharacter.character.name} ist verwirrt und greift Verbündeten ${allyInRange.character.name} an!`);
             
-            // Get the best attack to determine optimal range
-            const bestAttack = await getBestAttack(
-                characterPositions[charId],
-                characterPositions[enemyInRange.id]
-            );
-            
-            logBattleEvent(`${activeCharacter.character.name} greift aus sicherer Entfernung ${enemyInRange.character.name} an.`);
-            
-            // Perform attack from current position
-            const attackResult = await performAttack(
+            // Perform attack on ally with chain management
+            const attackResult = await performAttackWithChainManagement(
                 characterPositions[charId], 
-                characterPositions[enemyInRange.id]
+                characterPositions[allyInRange.id]
             );
             
-            // Log attack results and update HP
+            // Log attack results
             attackResult.log.forEach(logEntry => {
                 logBattleEvent(logEntry);
             });
+            
+            // Update HP display
             updateInitiativeHP();
-            
-            // Check if target was defeated
-            if (attackResult.success && characterPositions[enemyInRange.id].character.currentKP <= 0) {
-                removeDefeatedCharacter(enemyInRange.id);
-            }
-            
-            // After attacking, move away to optimal distance if using a ranged attack
-            const attackRange = bestAttack ? bestAttack.range : 1;
-            
-            // Only move away if the attack range allows it (ranged attack)
-            if (attackRange > 1) {
-                // Mark this character as wanting to move away after attacking
-                // Pass the attack range so the movement function knows the target distance
-                characterPositions[charId].moveAwayAfterAttack = true;
-                characterPositions[charId].attackRange = attackRange;
-                
-                // Get movement to optimal position (moving away)
-                const newPosition = moveCharacterByStrategy(characterPositions[charId]);
-                
-                // Remove the flags after getting movement
-                delete characterPositions[charId].moveAwayAfterAttack;
-                delete characterPositions[charId].attackRange;
-                
-                // If there's a path to follow, animate the movement
-                if (newPosition && newPosition.path && newPosition.path.length > 0) {
-                    logBattleEvent(`${activeCharacter.character.name} bewegt sich nach dem Angriff zur optimalen Distanz.`);
-                    
-                    // Use terrain-aware movement
-                    processMovementWithTerrainChecks(charId, characterPositions[charId], newPosition.path, () => {
-                        // End turn after movement completes
-                        setTimeout(() => {
-                            unhighlightActiveCharacter();
-                            endTurn(activeCharacter);
-                        }, 100);
-                    });
-                } else {
-                    // No movement possible after attack
-                    logBattleEvent(`${activeCharacter.character.name} kann sich nach dem Angriff nicht bewegen.`);
-                    
-                    // End turn
-                    setTimeout(() => {
-                        unhighlightActiveCharacter();
-                        endTurn(activeCharacter);
-                    }, 100);
-                }
-            } else {
-                // Range is 1, can't move away and still attack
-                logBattleEvent(`${activeCharacter.character.name} bleibt nach dem Nahkampfangriff in Position.`);
-                
-                // End turn without movement
-                setTimeout(() => {
-                    unhighlightActiveCharacter();
-                    endTurn(activeCharacter);
-                }, 100);
-            }
+        } else {
+            logBattleEvent(`${activeCharacter.character.name} ist verwirrt, findet aber keine Verbündeten zum Angreifen.`);
         }
     } catch (error) {
-        console.error("Error checking for enemies in range:", error);
+        console.error("Error checking for confused ally targets:", error);
     }
     
-    // If no attack was possible from current position, try to move and then attack
-    if (!hasAttacked) {
-        // Mark this character as wanting to move just enough to get in range
-        characterPositions[charId].moveToOptimalRange = true;
-        
-        // Calculate movement based on strategy
-        const newPosition = moveCharacterByStrategy(characterPositions[charId]);
-        
-        // Remove the flag after getting movement
-        delete characterPositions[charId].moveToOptimalRange;
-        
-        // If there's a path to follow, animate the movement
-        if (newPosition && newPosition.path && newPosition.path.length > 0) {            
-            // Use terrain-aware movement
-            processMovementWithTerrainChecks(charId, characterPositions[charId], newPosition.path, async () => {
-                // After movement completes, check for attack
-                try {
-                    const enemyInRangeAfterMove = await findNearestEnemyInRange(characterPositions[charId]);
-                    
-                    if (enemyInRangeAfterMove && enemyInRangeAfterMove.character) {
-                        logBattleEvent(`${activeCharacter.character.name} prüft Angriffsmöglichkeit nach Bewegung... ${enemyInRangeAfterMove.character.name} ist in Reichweite (${enemyInRangeAfterMove.distance} Felder)!`);
-                        
-                        // Perform attack
-                        const attackResult = await performAttack(
-                            characterPositions[charId], 
-                            characterPositions[enemyInRangeAfterMove.id]
-                        );
-                        
-                        // Log attack results
-                        attackResult.log.forEach(logEntry => {
-                            logBattleEvent(logEntry);
-                        });
-                        
-                        // Update HP display
-                        updateInitiativeHP();
-                        
-                        // Check if target was defeated
-                        if (attackResult.success && characterPositions[enemyInRangeAfterMove.id].character.currentKP <= 0) {
-                            removeDefeatedCharacter(enemyInRangeAfterMove.id);
-                        }
-                    } else {
-                        logBattleEvent(`${activeCharacter.character.name} findet kein Ziel zum Angreifen nach der Bewegung.`);
-                    }
-                } catch (error) {
-                    console.error("Error checking for enemies after movement:", error);
-                }
-                
-                // End turn
-                setTimeout(() => {
-                    unhighlightActiveCharacter();
-                    endTurn(activeCharacter);
-                }, 100);
-            });
-        } else {
-            // No movement possible, try to attack from current position
-            try {
-                const enemyInRange = await findNearestEnemyInRange(characterPositions[charId]);
-                
-                if (enemyInRange && enemyInRange.character) {
-                    logBattleEvent(`${activeCharacter.character.name} kann sich nicht bewegen, greift aber ${enemyInRange.character.name} von seiner Position an!`);
-                    
-                    // Perform attack
-                    const attackResult = await performAttack(
-                        characterPositions[charId], 
-                        characterPositions[enemyInRange.id]
-                    );
-                    
-                    // Log attack results
-                    attackResult.log.forEach(logEntry => {
-                        logBattleEvent(logEntry);
-                    });
-                    
-                    // Update HP display
-                    updateInitiativeHP();
-                    
-                    // Check if target was defeated
-                    if (attackResult.success && characterPositions[enemyInRange.id].character.currentKP <= 0) {
-                        removeDefeatedCharacter(enemyInRange.id);
-                    }
-                } else {
-                    logBattleEvent(`${activeCharacter.character.name} kann sich nicht bewegen und findet kein Ziel zum Angreifen.`);
-                }
-            } catch (error) {
-                console.error("Error checking for enemies in range:", error);
-                logBattleEvent(`${activeCharacter.character.name} kann sich nicht bewegen und findet kein Ziel zum Angreifen.`);
-            }
-            
-            // End turn
-            setTimeout(() => {
-                unhighlightActiveCharacter();
-                endTurn(activeCharacter);
-            }, 100);
-        }
-    }
+    // FIXED: Use POST_ATTACK_DELAY for confused turns too
+    setTimeout(() => {
+        unhighlightActiveCharacter();
+        endTurn(activeCharacter);
+    }, POST_ATTACK_DELAY);
 }
 
 /**
@@ -885,7 +1447,6 @@ function findValidBuffMove(character) {
         return null;
     }
 
-
     for (const attack of character.attacks) {
         // Skip attacks with no PP
         if (attack.currentPP !== undefined && 
@@ -894,8 +1455,6 @@ function findValidBuffMove(character) {
             continue;
         }
     }
-
-
     
     // Filter for buff-type moves with available PP
     const buffMoves = character.attacks.filter(attack => 
@@ -962,7 +1521,7 @@ function normalizeStatName(statName) {
 }
 
 /**
- * Apply a buff move to a Pokémon
+ * Apply a buff move to a Pokémon - FIXED VERSION
  * @param {string} charId - The character ID
  * @param {Object} character - The character object
  * @param {Object} move - The buff move to apply
@@ -981,7 +1540,7 @@ async function applyBuffMove(charId, character, move) {
         
         // Special animation for Schwerttanz
         if (move.weaponName === "Schwerttanz") {
-            // Animate the Schwerttanz move
+            // Animate the Schwerttanz move (this includes its own movement)
             await animateSchwerttanz(charId, character);
             
             // Apply +2 stages to Angriff
@@ -989,16 +1548,66 @@ async function applyBuffMove(charId, character, move) {
             
             if (statChangeResult.success) {
                 logBattleEvent(`${character.name}'s Angriff steigt stark!`);
-                
-                // Visual feedback
-                animateStatBoost(charId, 'attack-strong', () => {
-                    setTimeout(resolve, 25);
-                });
             } else {
                 logBattleEvent(statChangeResult.message);
-                resolve();
             }
-        } else {
+            resolve();
+        }
+        // Agilität
+        else if (move.weaponName === "Agilität") {
+            // Animate the Agilität move (this includes its own movement)
+            await animateAgilitaet(charId, character);
+            
+            // Apply +2 stages to Initiative
+            const statChangeResult = changeStatValue(character, 'initiative', 2);
+            
+            if (statChangeResult.success) {
+                logBattleEvent(`${character.name}'s Initiative steigt stark!`);
+            } else {
+                logBattleEvent(statChangeResult.message);
+            }
+            resolve();
+        }
+        // Panzerschutz
+        else if (move.weaponName === "Panzerschutz") {
+            await animatePanzerschutz(charId, character);
+            // Apply +1 stage to Verteidigung
+            const statChangeResult = changeStatValue(character, 'verteidigung', 1);
+            
+            if (statChangeResult.success) {
+                logBattleEvent(`${character.name}'s Verteidigung steigt!`);
+            } else {
+                logBattleEvent(statChangeResult.message);
+            }
+            resolve();
+        }
+        // Härtner
+        else if (move.weaponName === "Härtner") {
+            await animateHärtner(charId, character);
+            // Apply +1 stage to Verteidigung
+            const statChangeResult = changeStatValue(character, 'verteidigung', 1);
+            
+            if (statChangeResult.success) {
+                logBattleEvent(`${character.name}'s Verteidigung steigt!`);
+            } else {
+                logBattleEvent(statChangeResult.message);
+            }
+            resolve();
+        }
+        // Eisenabwehr
+        else if (move.weaponName === "Eisenabwehr") {
+            await animateEisenabwehr(charId, character);
+            // Apply +2 stages to Verteidigung
+            const statChangeResult = changeStatValue(character, 'verteidigung', 2);
+            
+            if (statChangeResult.success) {
+                logBattleEvent(`${character.name}'s Verteidigung steigt stark!`);
+            } else {
+                logBattleEvent(statChangeResult.message);
+            }
+            resolve();
+        }
+        else {
             // Generic buff animation and effect for other buff moves
             if (move.buffedStats && move.buffedStats.length > 0) {
                 // Apply +1 stage to each stat in buffedStats
@@ -1014,8 +1623,8 @@ async function applyBuffMove(charId, character, move) {
                 }
                 
                 // Simple animation for generic buff
-                animateStatBoost(charId, 'attack', () => {
-                    setTimeout(resolve, 100);
+                animateStatBoost(charId, 'attack', async () => {
+                    resolve();
                 });
             } else {
                 resolve();
@@ -1025,51 +1634,192 @@ async function applyBuffMove(charId, character, move) {
 }
 
 /**
- * Check and handle buff move for a character's turn
- * @param {string} charId - The character ID
- * @param {Object} activeCharacter - The active character
- * @returns {Promise<boolean>} - Promise that resolves to true if a buff move was used
+ * Perform attack with forced move selection (temporarily boosts preferred move)
+ * @param {Object} attacker - Attacker character data
+ * @param {Object} target - Target character data  
+ * @param {Object} forcedAttack - The attack to force selection of
+ * @returns {Promise<Object>} - Attack results
  */
-async function checkAndHandleBuffMove(charId, activeCharacter) {
-    // Calculate probability of using a buff move
-    const buffProbability = calculateBuffMoveProbability(activeCharacter.character);
+async function performAttackWithForcedSelection(attacker, target, forcedAttack) {
+    // Store original attacks array
+    const originalAttacks = attacker.character.attacks ? [...attacker.character.attacks] : [];
     
-    // Roll for buff move
-    const roll = Math.random();
-    
-    if (roll <= buffProbability) {
-        // Try to find a valid buff move
-        const buffMove = findValidBuffMove(activeCharacter.character);
-        
-        if (buffMove) {
-            // Move character based on strategy
-            const characterPositions = getCharacterPositions();
-            const newPosition = moveCharacterByStrategy(characterPositions[charId]);
+    try {
+        // Find and temporarily boost the forced attack to ensure getBestAttack selects it
+        if (attacker.character.attacks) {
+            const attackIndex = attacker.character.attacks.findIndex(attack => 
+                attack.weaponName === forcedAttack.weaponName
+            );
             
-            // If there's a path to follow, animate the movement
-            if (newPosition && newPosition.path && newPosition.path.length > 0) {
-                logBattleEvent(`${activeCharacter.character.name} bewegt sich.`);
+            if (attackIndex !== -1) {
+                // Store the original attack for damage calculation
+                const originalAttack = { ...attacker.character.attacks[attackIndex] };
                 
-                // Use terrain-aware movement
-                await new Promise(resolve => {
-                    processMovementWithTerrainChecks(charId, characterPositions[charId], newPosition.path, () => {
-                        resolve();
-                    });
-                });
+                // Create a modified attacks array with the forced attack boosted
+                const modifiedAttacks = [...attacker.character.attacks];
+                
+                // Temporarily boost damage/effectiveness to ensure selection
+                modifiedAttacks[attackIndex] = {
+                    ...originalAttack,
+                    damage: Math.max(originalAttack.damage || 0, 1000), // Boost damage
+                    tempForced: true // Mark as temporarily forced
+                };
+                
+                // Replace the attacks array
+                attacker.character.attacks = modifiedAttacks;
+                
+                // Restore original attacks BEFORE calling performAttack
+                attacker.character.attacks = originalAttacks;
+                
+                // Now call performAttack with the original attack data
+                // but getBestAttack will have already selected our desired attack
+                return await performAttack(attacker, target);
             }
-            
-            // Apply the buff move
-            await applyBuffMove(charId, activeCharacter.character, buffMove);
-            
-            // End turn
-            setTimeout(() => {
-                unhighlightActiveCharacter();
-                endTurn(activeCharacter);
-            }, 100);
-            
+        }
+        
+        return await performAttack(attacker, target);
+        
+    } finally {
+        // Always restore the original attacks array
+        if (originalAttacks.length > 0) {
+            attacker.character.attacks = originalAttacks;
+        }
+    }
+}
+
+export function isCharacterInAnimation(character, charPos) {
+    // Check if either the character or its position object have animation flags
+    return (
+        (character && (
+            character.animationInProgress === true ||
+            character.isUsingFlammenwurf === true ||
+            character.isUsingDonner === true ||
+            character.cannotMove === true
+        )) ||
+        (charPos && (
+            charPos.attackAnimationActive === true ||
+            charPos.isUsingFlammenwurf === true ||
+            charPos.isUsingDonner === true ||
+            charPos.cannotMove === true ||
+            charPos.animationInProgress === true
+        ))
+    );
+}
+
+function isAnyCharacterInAnimation() {
+    const characterPositions = getCharacterPositions();
+    
+    for (const charId in characterPositions) {
+        const charPos = characterPositions[charId];
+        if (charPos.character && isCharacterInAnimation(charPos.character, charPos)) {
+            console.log(`Animation in progress for ${charPos.character.name}: blocking turn system`);
             return true;
         }
     }
     
     return false;
+}
+
+export function notifyExplosionStarted() {
+    notifyAttackStarted('explosion');
+}
+
+export function notifyExplosionCompleted() {
+    notifyAttackCompleted('explosion');
+}
+
+export function areExplosionsInProgress() {
+    return isAttackTypeInProgress('explosion');
+}
+
+export function waitForExplosionsToComplete() {
+    return waitForAttacksToComplete();
+}
+
+/**
+ * Notify the turn system that a long-running attack has started
+ * @param {string} attackType - Type of attack (e.g., 'donner', 'flammenwurf', 'explosion')
+ */
+export function notifyAttackStarted(attackType = 'generic') {
+    attacksInProgress++;
+    activeAttackTypes.add(attackType);
+    console.log(`${attackType} attack started. Total attacks in progress: ${attacksInProgress}`);
+}
+
+/**
+ * Notify the turn system that a long-running attack has completed
+ * @param {string} attackType - Type of attack that completed
+ */
+export function notifyAttackCompleted(attackType = 'generic') {
+    attacksInProgress = Math.max(0, attacksInProgress - 1);
+    activeAttackTypes.delete(attackType);
+    console.log(`${attackType} attack completed. Remaining attacks: ${attacksInProgress}`);
+    
+    if (attacksInProgress === 0) {
+        const callbacks = [...attackCompletionCallbacks];
+        attackCompletionCallbacks = [];
+        
+        callbacks.forEach(callback => {
+            try {
+                callback();
+            } catch (error) {
+                console.error('Error in attack completion callback:', error);
+            }
+        });
+    }
+}
+
+/**
+ * Check if any long-running attacks are currently in progress
+ */
+export function areAttacksInProgress() {
+    return attacksInProgress > 0;
+}
+
+/**
+ * Check if a specific type of attack is in progress
+ * @param {string} attackType - Type of attack to check for
+ */
+export function isAttackTypeInProgress(attackType) {
+    return activeAttackTypes.has(attackType);
+}
+
+/**
+ * Get all currently active attack types
+ */
+export function getActiveAttackTypes() {
+    return Array.from(activeAttackTypes);
+}
+
+/**
+ * Wait for all attacks to complete
+ */
+export function waitForAttacksToComplete() {
+    return new Promise((resolve) => {
+        if (attacksInProgress === 0) {
+            resolve();
+        } else {
+            attackCompletionCallbacks.push(resolve);
+        }
+    });
+}
+
+/**
+ * Emergency cleanup - force complete all attacks
+ */
+export function forceCompleteAllAttacks() {
+    console.warn('Force completing all attacks due to emergency cleanup');
+    attacksInProgress = 0;
+    activeAttackTypes.clear();
+    
+    const callbacks = [...attackCompletionCallbacks];
+    attackCompletionCallbacks = [];
+    
+    callbacks.forEach(callback => {
+        try {
+            callback();
+        } catch (error) {
+            console.error('Error in forced attack completion callback:', error);
+        }
+    });
 }

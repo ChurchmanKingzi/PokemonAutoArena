@@ -31,7 +31,23 @@ const POKEMON_ITEMS = {
     'wahlschal': {
         name: 'Wahlschal',
         effect: 'Erhöht die Initiative, aber nur eine Attacke kann verwendet werden.'
-    }
+    },
+    'heißbrocken': {
+        name: 'Heißbrocken',
+        effect: 'Erhöht die Dauer von Sonnentagen des Pokemon auf 8 Runden.'
+    },
+    'nassbrocken': {
+        name: 'Nassbrocken',
+        effect: 'Erhöht die Dauer von Regentänzen des Pokemon auf 8 Runden.'
+    },
+    'glattbrocken': {
+        name: 'Glattbrocken',
+        effect: 'Erhöht die Dauer von Sandstürmen des Pokemon auf 8 Runden.'
+    },
+    'eisbrocken': {
+        name: 'Eisbrocken',
+        effect: 'Erhöht die Dauer von Schnee und Hagelstürmen des Pokemon auf 8 Runden.'
+    },
 };
 
 /**

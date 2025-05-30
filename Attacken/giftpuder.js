@@ -4,14 +4,10 @@
  */
 
 import { TILE_SIZE } from '../config.js';
-import { addStatusEffect, hasStatusEffect } from '../statusEffects.js';
-import { logBattleEvent } from '../battleLog.js';
-import { 
-    createConeIndicator, 
-    removeConeIndicator, 
-    findCharactersInCone,
-    isPositionInCone 
-} from '../attackCone.js';
+import { hasStatusEffect, hasStatusImmunity } from '../statusEffects.js';
+import { createConeIndicator, removeConeIndicator, findCharactersInCone,isPositionInCone } from '../attackCone.js';
+import { addStatusEffect } from '../statusEffects.js';
+import { applyVisualHitEffect } from '../coneHits.js';
 
 // Constants
 const DEFAULT_CONE_ANGLE = 45;
@@ -52,6 +48,20 @@ export class GiftpuderAttack {
         this.creationTime = Date.now();
         this.statusApplied = false;
         
+        // Handle miss case - calculate a new direction
+        if (!this.isHit) {
+            // Display miss message over the original target
+            import('../damageNumbers.js').then(module => {
+                module.createMissMessage(this.target);
+            });
+            
+            // Calculate effective target direction (missed angle)
+            this.effectiveTarget = this.calculateMissDirection();
+        } else {
+            // If hit, use the original target direction
+            this.effectiveTarget = this.target;
+        }
+        
         // Create the cone and particles
         this.createVisualElements();
         
@@ -64,13 +74,49 @@ export class GiftpuderAttack {
     }
     
     /**
-     * Create the visual elements for poison powder
+     * Calculate a random direction for a missed cone attack
+     * that ensures the original target is NOT in the cone
+     * @returns {Object} - New target direction {x, y}
      */
+    calculateMissDirection() {
+        // Original direction vector from attacker to target
+        const dx = this.target.x - this.attacker.x;
+        const dy = this.target.y - this.attacker.y;
+        const originalDistance = Math.sqrt(dx * dx + dy * dy);
+        
+        // Original angle (in radians)
+        const originalAngle = Math.atan2(dy, dx);
+        
+        // Cone half-angle in radians
+        const coneHalfAngle = (this.coneAngle / 2) * (Math.PI / 180);
+        
+        // Generate a random angle that's outside the cone angle
+        // to ensure the original target is NOT in the new cone
+        let offsetAngle;
+        if (Math.random() < 0.5) {
+            // Miss to the left
+            offsetAngle = coneHalfAngle + (Math.random() * Math.PI / 4); // 0-45 degrees outside cone
+        } else {
+            // Miss to the right
+            offsetAngle = -coneHalfAngle - (Math.random() * Math.PI / 4); // 0-45 degrees outside cone
+        }
+        
+        // Calculate new direction
+        const newAngle = originalAngle + offsetAngle;
+        
+        // Calculate new target position at the same distance
+        const newX = this.attacker.x + Math.cos(newAngle) * originalDistance;
+        const newY = this.attacker.y + Math.sin(newAngle) * originalDistance;
+        
+        return { x: newX, y: newY };
+    }
+    
+    // Update createVisualElements to use effectiveTarget
     createVisualElements() {
         // First create the cone indicator
         this.coneElement = createConeIndicator(
             this.attacker, 
-            this.target, 
+            this.effectiveTarget, // Use effective target
             this.range, 
             this.coneAngle, 
             'giftpuder',
@@ -148,7 +194,7 @@ export class GiftpuderAttack {
      */
     getRandomPositionInCone() {
         const attacker = this.attacker;
-        const targetDirection = this.target;
+        const targetDirection = this.effectiveTarget;
         const range = this.range;
         
         // Try random positions until we find one in the cone
@@ -189,117 +235,61 @@ export class GiftpuderAttack {
     
     /**
      * Find all valid targets in the cone
-     * @returns {Array} - Array of valid targets
+     * @returns {Promise<Array>} - Array of valid targets
      */
-    findValidTargets() {
+    async findValidTargets() {
         // Get all characters in the cone
         const charactersInCone = findCharactersInCone(
             this.attacker, 
-            this.target, 
+            this.effectiveTarget, 
             this.range, 
             this.coneAngle
         );
         
-        // Filter out invalid targets:
-        // - Attacker (self)
-        // - Poison-type Pokemon
-        // - Steel-type Pokemon
-        // - Grass-type Pokemon
-        // - Pokemon with the "Immunität" ability
-        // - Already poisoned Pokemon
-        const validTargets = charactersInCone.filter(target => {
+        // Filter out invalid targets using the new status immunity system
+        const validTargets = [];
+        
+        for (const target of charactersInCone) {
             // Skip attacker
-            if (target.character === this.attacker.character) return false;
+            if (target.character === this.attacker.character) continue;
             
-            // Check if already has the poisoned status
-            if (hasStatusEffect(target.character, 'poisoned') ||
-                hasStatusEffect(target.character, 'badly-poisoned')) {
-                return false;
-            }
-            
+            // Check immunity using the comprehensive immunity system
+            const isImmune = await hasStatusImmunity(target.character, 'poisoned', {
+                attacker: this.attacker.character,
+                targetPosition: { x: target.x, y: target.y },
+                attackerPosition: { x: this.attacker.x, y: this.attacker.y }
+            });
+
             const pokemon = target.character;
             
-            // Check for immune types
+            // Check for Grass type immunity
             if (pokemon.pokemonTypes) {
                 const types = pokemon.pokemonTypes.map(type => 
                     typeof type === 'string' ? type.toLowerCase() : ""
                 );
-                
-                // Poison, Steel, and Grass types are immune
-                if (types.includes('poison') || 
-                    types.includes('gift') || 
-                    types.includes('steel') || 
-                    types.includes('stahl') ||
-                    types.includes('grass') ||
-                    types.includes('pflanze')) {
-                    return false;
-                }
             }
             
-            // Check for immunity ability
-            if (this.hasImmunityAbility(pokemon)) {
-                return false;
+            if (!isImmune && !(types.includes('grass') || types.includes('pflanze'))) {
+                validTargets.push(target);
             }
-            
-            return true;
-        });
+        }
         
         return validTargets;
     }
     
     /**
-     * Check if a Pokemon has the Immunity ability
-     * @param {Object} pokemon - Pokemon to check
-     * @returns {boolean} - Whether the Pokemon has immunity
-     */
-    hasImmunityAbility(pokemon) {
-        if (!pokemon) return false;
-        
-        // Check in abilities array
-        if (pokemon.abilities && Array.isArray(pokemon.abilities)) {
-            for (const ability of pokemon.abilities) {
-                if (ability && 
-                    (ability.name === 'Immunität' || 
-                     ability.name === 'Immunity' ||
-                     (ability.description && (
-                         ability.description.includes('Immunität') ||
-                         ability.description.includes('Immunity')
-                     ))
-                    )) {
-                    return true;
-                }
-            }
-        }
-        
-        // Check in ability property
-        if (pokemon.ability) {
-            if (typeof pokemon.ability === 'string') {
-                if (pokemon.ability === 'Immunität' || pokemon.ability === 'Immunity') {
-                    return true;
-                }
-            } else if (pokemon.ability.name) {
-                if (pokemon.ability.name === 'Immunität' || pokemon.ability.name === 'Immunity') {
-                    return true;
-                }
-            }
-        }
-        
-        return false;
-    }
-    
-    /**
      * Apply poison status to valid targets
      */
-    applyPoisonStatus() {
+    async applyPoisonStatus() {
         if (this.statusApplied || this.removed) return;
         
         // Mark status as applied
         this.statusApplied = true;
         
         // Find valid targets
-        const validTargets = this.findValidTargets();
+        const validTargets = await this.findValidTargets();
         
-        // Apply poison status to each valid target
+        // Apply poison to each valid target
         validTargets.forEach(target => {
             const applied = addStatusEffect(target.character, 'poisoned', {
                 sourceId: this.attacker.character.uniqueId,
@@ -307,17 +297,13 @@ export class GiftpuderAttack {
             });
             
             if (applied) {
-                // Apply visual purple flash effect to the target
-                this.applyPurpleFlashEffect(target.id);
+                // Apply visual hit effect
+                applyVisualHitEffect(target.id, 'poison');
                 
-                logBattleEvent(`${target.character.name} wurde durch Giftpuder von ${this.attacker.character.name} vergiftet!`);
+                // Apply purple flash effect
+                this.applyPurpleFlashEffect(target.id);
             }
         });
-        
-        // If no valid targets were found, log that
-        if (validTargets.length === 0) {
-            logBattleEvent(`Giftpuder von ${this.attacker.character.name} hat keine Wirkung!`);
-        }
     }
     
     /**
@@ -443,6 +429,19 @@ export function addGiftpuderStyles() {
             pointer-events: none;
         }
         
+        /* Ensure the SVG container has no background or border */
+        .attack-cone.giftpuder-cone {
+            background: none !important;
+            border: none !important;
+        }
+        
+        /* Style for Giftpuder cone - target only path and circle elements */
+        .attack-cone.giftpuder-cone path,
+        .attack-cone.giftpuder-cone circle {
+            fill: rgba(175, 106, 175, 0.3);
+            stroke: rgba(175, 106, 175, 0.6);
+        }
+        
         /* Floating animation for particles */
         @keyframes giftpuderFloat {
             0% {
@@ -480,66 +479,65 @@ export function addGiftpuderStyles() {
  * Check if target is valid for Giftpuder
  * This function can be used to determine if we should use the attack at all
  * @param {Object} target - Target to check
- * @returns {boolean} - Whether target is valid
+ * @param {Object} attacker - The attacking Pokemon (optional)
+ * @param {Object} targetPosition - Position of the target (optional)
+ * @param {Object} attackerPosition - Position of the attacker (optional)
+ * @returns {Promise<boolean>} - Whether target is valid
  */
-export function isValidGiftpuderTarget(target) {
+export async function isValidGiftpuderTarget(target, attacker = null, targetPosition = null, attackerPosition = null) {
     // If target doesn't exist, it's not valid
     if (!target || !target.character) return false;
     
-    // Check if target already has poison status
-    if (hasStatusEffect(target.character, 'poisoned') ||
-        hasStatusEffect(target.character, 'badly-poisoned')) {
-        return false;
-    }
+    // Use the comprehensive immunity system
+    const isImmune = await hasStatusImmunity(target.character, 'poisoned', {
+        attacker: attacker,
+        targetPosition: targetPosition,
+        attackerPosition: attackerPosition
+    });
     
-    // Check for immune types
-    if (target.character.pokemonTypes) {
-        const types = target.character.pokemonTypes.map(type => 
-            typeof type === 'string' ? type.toLowerCase() : ""
-        );
+    return !isImmune;
+}
+
+/**
+ * Apply Giftpuder effects (poison status)
+ */
+export async function applyGiftpuderEffects(attacker, validTargets, attack, results) {
+    let successfulTargets = 0;
+    
+    // Filter targets again for immunity (in case this is called independently)
+    const finalTargets = [];
+    for (const target of validTargets) {
+        const isImmune = await hasStatusImmunity(target.character, 'poisoned', {
+            attacker: attacker.character,
+            targetPosition: { x: target.x, y: target.y },
+            attackerPosition: { x: attacker.x, y: attacker.y }
+        });
         
-        // Poison, Steel, and Grass types are immune
-        if (types.includes('poison') || 
-            types.includes('gift') || 
-            types.includes('steel') || 
-            types.includes('stahl') ||
-            types.includes('grass') ||
-            types.includes('pflanze')) {
-            return false;
+        if (!isImmune) {
+            finalTargets.push(target);
         }
     }
     
-    // Check for immunity ability
-    const pokemon = target.character;
-    
-    // Check in abilities array
-    if (pokemon.abilities && Array.isArray(pokemon.abilities)) {
-        for (const ability of pokemon.abilities) {
-            if (ability && 
-                (ability.name === 'Immunität' || 
-                 ability.name === 'Immunity' ||
-                 (ability.description && (
-                     ability.description.includes('Immunität') ||
-                     ability.description.includes('Immunity')
-                 ))
-                )) {
-                return false;
-            }
+    finalTargets.forEach(target => {
+        const applied = addStatusEffect(target.character, 'poisoned', {
+            sourceId: attacker.character.uniqueId,
+            sourceName: attacker.character.name
+        });
+        
+        if (applied) {
+            successfulTargets++;
+            applyVisualHitEffect(target.id, 'poison');
+            results.messages.push(`${target.character.name} wurde durch Giftpuder von ${attacker.character.name} vergiftet!`);
+            
+            results.effects.push({
+                targetId: target.id,
+                type: 'status',
+                status: 'poisoned'
+            });
         }
-    }
+    });
     
-    // Check in ability property
-    if (pokemon.ability) {
-        if (typeof pokemon.ability === 'string') {
-            if (pokemon.ability === 'Immunität' || pokemon.ability === 'Immunity') {
-                return false;
-            }
-        } else if (pokemon.ability.name) {
-            if (pokemon.ability.name === 'Immunität' || pokemon.ability.name === 'Immunity') {
-                return false;
-            }
-        }
+    if (successfulTargets === 0) {
+        results.messages.push(`Giftpuder von ${attacker.character.name} hat keine Wirkung!`);
     }
-    
-    return true;
 }

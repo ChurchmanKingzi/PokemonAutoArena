@@ -22,7 +22,6 @@ function init() {
     
     // Pre-load Pokémon data (this will now load all Pokémon)
     loadPokemon().then(() => {
-        console.log("Pokémon data loaded");
         // After Pokémon are loaded, update the team slots to show them
         updateTeamSlots();
     }).catch(err => {

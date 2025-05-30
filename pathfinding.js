@@ -10,9 +10,6 @@ import { GRID_SIZE } from './config.js';
 import { TERRAIN_TYPES } from './terrainGenerator.js';
 import { getOccupiedTiles } from './pokemonDistanceCalculator.js';
 
-// Track global movement history for debugging
-const globalMovementHistory = {};
-
 /**
  * Find the shortest/cheapest path to a target using A* pathfinding algorithm
  * with complete multi-tile Pokémon collision avoidance
@@ -57,7 +54,6 @@ export function findPathToTarget(startX, startY, targetX, targetY, movementRange
     
     // Calculate initial distance from start to target (for progress tracking)
     const startToTargetDistance = heuristic(startX, startY, targetX, targetY);
-    console.log(`Initial distance from (${startX},${startY}) to (${targetX},${targetY}): ${startToTargetDistance}`);
     
     // Now perform A* pathfinding using the global direction map for guidance
     const openSet = new Map();
@@ -121,7 +117,6 @@ export function findPathToTarget(startX, startY, targetX, targetY, movementRange
                 };
             } else {
                 // This path isn't valid for the full Pokémon, continue searching
-                console.log(`Path to target invalid for multi-tile Pokémon, continuing search...`);
                 continue;
             }
         }
@@ -324,19 +319,16 @@ export function findPathToTarget(startX, startY, targetX, targetY, movementRange
     
     // If we found a path that gets us closer to the target, use it
     if (bestPartialPath && bestDistanceProgress > 0) {
-        console.log(`Found path that improves distance by ${bestDistanceProgress}`);
         return bestPartialPath;
     }
     
     // If no path gets us closer but we have a valid path, use the closest one
     if (fallbackPath) {
-        console.log("Using closest path as fallback");
         return fallbackPath;
     }
     
     // Last resort: If we still have no valid path, try direct one-step movement
     // toward the target (cross lava if needed)
-    console.log("No good path found, checking one-step options directly toward target");
     
     // Calculate direction toward target
     const dx = targetX - startX;
@@ -387,7 +379,6 @@ export function findPathToTarget(startX, startY, targetX, targetY, movementRange
         if (moveCost > movementRange) continue;
         
         // This is a valid one-step move, use it
-        console.log(`Taking one step to (${newX},${newY}) through ${terrainType}`);
         return {
             x: newX,
             y: newY,
@@ -403,7 +394,6 @@ export function findPathToTarget(startX, startY, targetX, targetY, movementRange
     }
     
     // If we get here, there is absolutely no valid move possible
-    console.log("No valid moves possible");
     return null;
 }
 
@@ -617,73 +607,6 @@ function getOppositeDirection(direction) {
         case 'down': return 'up';
         case 'left': return 'right';
         default: return null;
-    }
-}
-
-/**
- * Debug function to visualize a path (for testing purposes)
- * @param {Array} path - Path array
- * @param {number} startX - Start X position
- * @param {number} startY - Start Y position  
- * @param {number} targetX - Target X position
- * @param {number} targetY - Target Y position
- * @param {Array} globalMap - Optional global direction map to show
- */
-function debugPath(path, startX, startY, targetX, targetY, globalMap = null) {
-    // Create a grid representation
-    const grid = [];
-    for (let y = 0; y < GRID_SIZE; y++) {
-        grid[y] = [];
-        for (let x = 0; x < GRID_SIZE; x++) {
-            const terrain = getTerrainAt(x, y);
-            
-            if (x === startX && y === startY) {
-                grid[y][x] = 'S'; // Start
-            } else if (x === targetX && y === targetY) {
-                grid[y][x] = 'T'; // Target
-            } else if (terrain === TERRAIN_TYPES.LAVA) {
-                grid[y][x] = 'L'; // Lava
-            } else if (terrain === TERRAIN_TYPES.WATER) {
-                grid[y][x] = 'W'; // Water
-            } else if (terrain === TERRAIN_TYPES.MOUNTAIN) {
-                grid[y][x] = 'M'; // Mountain
-            } else {
-                grid[y][x] = '.'; // Empty space
-            }
-            
-            // Show direction arrows if global map is provided
-            if (globalMap && x !== targetX && y !== targetY) {
-                const dirInfo = globalMap[y][x];
-                if (dirInfo && dirInfo.direction) {
-                    const dir = dirInfo.direction;
-                    if (dir.name === 'up') grid[y][x] = '↑';
-                    else if (dir.name === 'right') grid[y][x] = '→';
-                    else if (dir.name === 'down') grid[y][x] = '↓';
-                    else if (dir.name === 'left') grid[y][x] = '←';
-                }
-            }
-        }
-    }
-    
-    // Mark path on grid
-    if (path) {
-        path.forEach((pos, index) => {
-            grid[pos.y][pos.x] = String(index % 10); // Use numbers for path (modulo 10 to keep single digit)
-        });
-    }
-    
-    // Print grid to console
-    console.log('Path visualization:');
-    grid.forEach(row => {
-        console.log(row.join(' '));
-    });
-    
-    // Print path terrain types
-    if (path) {
-        console.log('Path terrain types:');
-        path.forEach((pos, i) => {
-            console.log(`Step ${i}: ${pos.x},${pos.y} - ${pos.terrainType}`);
-        });
     }
 }
 

@@ -5,7 +5,7 @@
 
 import { getCharacterPositions, updateCharacterPosition } from './characterPositions.js';
 import { TILE_SIZE } from './config.js';
-import { focusOnCharacter, positionElementWithCamera } from './cameraSystem.js';
+import { focusOnCharacter } from './cameraSystem.js';
 import { getPokemonSprite, updatePokemonPosition, setPokemonSpriteState } from './pokemonOverlay.js';
 
 /**
@@ -92,6 +92,11 @@ export async function animateDodge(charId, targetPos, callback) {
     // Update HP bar position to follow the sprite
     if (sprite.updateHPBar) {
         sprite.updateHPBar();
+    }
+
+    // Update status icons position to follow the sprite
+    if (sprite.updateStatusIcons) {
+        sprite.updateStatusIcons();
     }
     
     // Wait for animation to complete
@@ -280,30 +285,65 @@ export async function animateMeleeAttack(attackerId, attackerPos, targetPos, att
 }
 
 /**
- * Animate a stat boost effect (bounce and arrow)
- * @param {string} charId - Character ID
- * @param {string} buffType - Type of buff ('attack', 'defense', etc)
+ * Animate a stat boost/decrease effect (bounce and arrow)
+ * @param {string} charId - Character ID or uniqueId
+ * @param {string} statType - Type of stat ('angriff', 'verteidigung', etc.)
+ * @param {number} stages - Number of stages changed (positive for increase, negative for decrease)
  * @param {Function} callback - Callback function when animation completes
  */
-export function animateStatBoost(charId, buffType, callback) {
+export function animateStatBoost(charId, statType, stages, callback) {   
+    // Get character positions 
     const characterPositions = getCharacterPositions();
-    const charPos = characterPositions[charId];
+    let charPos = null;
+    let actualCharId = null;
     
-    if (!charPos) {
-        if (callback) callback();
-        return;
+    // First try direct lookup (for cases where actual character ID is passed)
+    if (characterPositions[charId]) {
+        charPos = characterPositions[charId];
+        actualCharId = charId;
+    } else {
+        // If not found by direct lookup, search by uniqueId
+        for (const posId in characterPositions) {
+            const position = characterPositions[posId];
+            if (position.character && position.character.uniqueId === charId) {
+                charPos = position;
+                actualCharId = posId;
+                break;
+            }
+        }
     }
     
-    // Get the Pokemon sprite
-    const sprite = getPokemonSprite(charId);
-    if (!sprite) {
-        if (callback) callback();
-        return;
+    // If still not found, try a name-based partial match as last resort
+    if (!charPos) {
+        for (const posId in characterPositions) {
+            const position = characterPositions[posId];
+            if (position.character && position.character.name && 
+                (charId.includes(position.character.name) || 
+                 position.character.name.includes(charId.split('_')[0]))) {
+                charPos = position;
+                actualCharId = posId;
+                break;
+            }
+        }
+    }
+    
+    // If still not found, use center of battlefield as fallback
+    if (!charPos) {
+        console.error('Could not find position for character ID:', charId);
+        charPos = { x: Math.floor(GRID_SIZE/2), y: Math.floor(GRID_SIZE/2) };
+        actualCharId = charId; // Use original ID as fallback
+    }
+    
+    // Get the Pokemon sprite using the correct character ID
+    let sprite = null;
+    if (actualCharId) {
+        sprite = getPokemonSprite(actualCharId);
     }
     
     // Get battlefield element for overlay effects
     const battlefieldElement = document.querySelector('.battlefield-grid');
     if (!battlefieldElement) {
+        console.error('Battlefield grid element not found');
         if (callback) callback();
         return;
     }
@@ -311,36 +351,58 @@ export function animateStatBoost(charId, buffType, callback) {
     // Calculate pixel position for effects
     const posX = (charPos.x * TILE_SIZE) + (TILE_SIZE / 2);
     const posY = (charPos.y * TILE_SIZE) + (TILE_SIZE / 2);
-    
+        
     // Add stat boost CSS if not already present
     if (!document.getElementById('stat-boost-animations')) {
         const style = document.createElement('style');
         style.id = 'stat-boost-animations';
         style.textContent = `
-            @keyframes stat-arrow-animation {
-                0% { opacity: 0; transform: translate(-50%, 0); }
-                20% { opacity: 1; transform: translate(-50%, 0); }
-                80% { opacity: 1; transform: translate(-50%, -15px); }
-                100% { opacity: 0; transform: translate(-50%, -30px); }
+            /* Keyframes for arrow animations */
+            @keyframes stat-arrow-up {
+                0% { opacity: 0; transform: translateY(0); }
+                20% { opacity: 1; transform: translateY(0); }
+                80% { opacity: 1; transform: translateY(-30px); }
+                100% { opacity: 0; transform: translateY(-60px); }
             }
             
+            @keyframes stat-arrow-down {
+                0% { opacity: 0; transform: translateY(0); }
+                20% { opacity: 1; transform: translateY(0); }
+                80% { opacity: 1; transform: translateY(30px); }
+                100% { opacity: 0; transform: translateY(60px); }
+            }
+            
+            /* Arrow base styling */
             .stat-arrow {
                 position: absolute;
-                top: -20px;
-                left: 50%;
-                transform: translateX(-50%);
-                font-size: 24px;
+                width: 100%;
+                text-align: center;
+                font-size: 32px;
                 font-weight: bold;
-                z-index: 1000;
+                z-index: 2500;
                 pointer-events: none;
-                animation: stat-arrow-animation 1.5s forwards;
+                text-shadow: 0 0 5px white;
             }
             
-            .attack-boost .stat-arrow { color: #e74c3c; text-shadow: 0 0 5px rgba(231, 76, 60, 0.7); }
-            .attack-strong .stat-arrow { color: #ff0000; text-shadow: 0 0 8px rgba(255, 0, 0, 0.8); font-size: 28px; }
-            .defense-boost .stat-arrow { color: #3498db; text-shadow: 0 0 5px rgba(52, 152, 219, 0.7); }
-            .speed-boost .stat-arrow { color: #2ecc71; text-shadow: 0 0 5px rgba(46, 204, 113, 0.7); }
+            /* Animation classes */
+            .stat-arrow.up {
+                animation: stat-arrow-up 1.5s forwards;
+            }
             
+            .stat-arrow.down {
+                animation: stat-arrow-down 1.5s forwards;
+            }
+            
+            /* Color styling for each stat type */
+            .angriff-boost .stat-arrow { color: #e74c3c; text-shadow: 0 0 5px rgba(231, 76, 60, 0.7), 0 0 2px white; }
+            .verteidigung-boost .stat-arrow { color: #3498db; text-shadow: 0 0 5px rgba(52, 152, 219, 0.7), 0 0 2px white; }
+            .spezialAngriff-boost .stat-arrow { color: #ff8c00; text-shadow: 0 0 5px rgba(255, 140, 0, 0.7), 0 0 2px white; }
+            .spezialVerteidigung-boost .stat-arrow { color: #8e44ad; text-shadow: 0 0 5px rgba(142, 68, 173, 0.7), 0 0 2px white; }
+            .init-boost .stat-arrow { color: #2ecc71; text-shadow: 0 0 5px rgba(46, 204, 113, 0.7), 0 0 2px white; }
+            .gena-boost .stat-arrow { color: #34495e; text-shadow: 0 0 5px rgba(52, 73, 94, 0.7), 0 0 2px white; }
+            .pa-boost .stat-arrow { color: #f1c40f; text-shadow: 0 0 5px rgba(241, 196, 15, 0.7), 0 0 2px white; }
+            
+            /* Flash effect styling */
             .stat-flash {
                 position: absolute;
                 border-radius: 50%;
@@ -349,42 +411,81 @@ export function animateStatBoost(charId, buffType, callback) {
             }
             
             @keyframes stat-flash {
-                0% { opacity: 0; transform: scale(0.8); }
-                50% { opacity: 0.7; transform: scale(1.2); }
-                100% { opacity: 0; transform: scale(1); }
+                0% { opacity: 0; transform: translate(-50%, -50%) scale(0.8); }
+                50% { opacity: 0.7; transform: translate(-50%, -50%) scale(1.2); }
+                100% { opacity: 0; transform: translate(-50%, -50%) scale(1); }
             }
         `;
         document.head.appendChild(style);
     }
     
-    // Create arrow container (no camera scaling needed since it's positioned relative to battlefield)
-    const arrowContainer = document.createElement('div');
-    arrowContainer.className = `${buffType}`;
-    arrowContainer.style.position = 'absolute';
-    arrowContainer.style.left = `${posX}px`;
-    arrowContainer.style.top = `${posY - 20}px`;
-    arrowContainer.style.transform = 'translate(-50%, 0)';
-    arrowContainer.style.width = `${TILE_SIZE}px`;
-    arrowContainer.style.height = `${TILE_SIZE}px`;
-    arrowContainer.style.zIndex = '2000';
-    arrowContainer.style.pointerEvents = 'none';
-    
-    // Create arrow(s)
-    const arrow = document.createElement('div');
-    arrow.className = 'stat-arrow';
-    arrow.textContent = '▲';
-    arrowContainer.appendChild(arrow);
-    
-    // Add second arrow for strong boosts
-    if (buffType === 'attack-strong') {
-        const arrow2 = document.createElement('div');
-        arrow2.className = 'stat-arrow';
-        arrow2.textContent = '▲';
-        arrow2.style.top = '-25px';
-        arrowContainer.appendChild(arrow2);
+    // Determine the CSS class and flash color based on the stat type
+    let buffClass, flashColor;
+    switch (statType) {
+        case 'angriff':
+            buffClass = 'angriff-boost';
+            flashColor = 'rgba(231, 76, 60, 0.3)'; // Red
+            break;
+        case 'verteidigung':
+            buffClass = 'verteidigung-boost';
+            flashColor = 'rgba(52, 152, 219, 0.3)'; // Blue
+            break;
+        case 'spezialAngriff':
+            buffClass = 'spezialAngriff-boost';
+            flashColor = 'rgba(255, 140, 0, 0.3)'; // Orange
+            break;
+        case 'spezialVerteidigung':
+            buffClass = 'spezialVerteidigung-boost';
+            flashColor = 'rgba(142, 68, 173, 0.3)'; // Purple
+            break;
+        case 'init':
+            buffClass = 'init-boost';
+            flashColor = 'rgba(46, 204, 113, 0.3)'; // Green
+            break;
+        case 'gena':
+            buffClass = 'gena-boost';
+            flashColor = 'rgba(52, 73, 94, 0.3)'; // Dark gray
+            break;
+        case 'pa':
+            buffClass = 'pa-boost';
+            flashColor = 'rgba(241, 196, 15, 0.3)'; // Yellow
+            break;
+        default:
+            buffClass = 'angriff-boost'; // Default to attack boost
+            flashColor = 'rgba(231, 76, 60, 0.3)'; // Red
     }
     
-    // Create color flash (no camera scaling needed)
+    // Get Pokémon size category for scaling the arrow position
+    const sizeCategory = parseInt(sprite?.dataset.sizeCategory) || 1;
+    
+    // Calculate the vertical offset based on size category
+    const yOffset = TILE_SIZE * (1 + sizeCategory * 0.5);
+    
+    // Create arrow container
+    const arrowContainer = document.createElement('div');
+    arrowContainer.className = `${buffClass}`;
+    arrowContainer.style.position = 'absolute';
+    arrowContainer.style.left = `${posX}px`;
+    arrowContainer.style.top = `${posY - yOffset}px`; // Positioned higher based on size
+    arrowContainer.style.width = `${TILE_SIZE * 2}px`;
+    arrowContainer.style.height = `${TILE_SIZE * 3}px`;
+    arrowContainer.style.zIndex = '3000';
+    arrowContainer.style.pointerEvents = 'none';
+    arrowContainer.style.transform = 'translate(-50%, -50%)';
+    arrowContainer.id = `stat-boost-${actualCharId}-${statType}-${Date.now()}`;
+    
+    // Create arrows based on the number of stages
+    const absStages = Math.abs(stages);
+    for (let i = 0; i < absStages; i++) {
+        const arrow = document.createElement('div');
+        arrow.className = `stat-arrow ${stages > 0 ? 'up' : 'down'}`;
+        arrow.textContent = stages > 0 ? '▲' : '▼';
+        arrow.style.top = `${TILE_SIZE + (i * 10)}px`;
+        arrow.style.animationDelay = `${i * 0.15}s`;
+        arrowContainer.appendChild(arrow);
+    }
+    
+    // Create color flash element
     const flash = document.createElement('div');
     flash.className = 'stat-flash';
     flash.style.position = 'absolute';
@@ -393,70 +494,136 @@ export function animateStatBoost(charId, buffType, callback) {
     flash.style.transform = 'translate(-50%, -50%)';
     flash.style.width = `${TILE_SIZE * 1.5}px`;
     flash.style.height = `${TILE_SIZE * 1.5}px`;
-    
-    // Set flash color
-    if (buffType === 'attack' || buffType === 'attack-strong') {
-        flash.style.backgroundColor = 'rgba(231, 76, 60, 0.3)';
-    } else if (buffType === 'defense') {
-        flash.style.backgroundColor = 'rgba(52, 152, 219, 0.3)';
-    } else if (buffType === 'speed') {
-        flash.style.backgroundColor = 'rgba(46, 204, 113, 0.3)';
-    }
+    flash.style.backgroundColor = flashColor;
+    flash.style.zIndex = '2900';
+    flash.id = `stat-flash-${actualCharId}-${Date.now()}`;
     
     // Add elements to battlefield
     battlefieldElement.appendChild(arrowContainer);
     battlefieldElement.appendChild(flash);
     
-    // Create bounce effect by temporarily moving the sprite
+    // Add camera scaling class after elements are in DOM
+    setTimeout(() => {
+        arrowContainer.classList.add('camera-scaled-element');
+        flash.classList.add('camera-scaled-element');
+    }, 0);
+    
+    // Store original position for bounce animation
     const originalX = charPos.x;
     const originalY = charPos.y;
     
-    // Define bounce sequence
-    const bounceSequence = [
-        { dx: 0, dy: -1 }, // Up
-        { dx: 0, dy: 0 },  // Center
-        { dx: 0, dy: -1 }, // Up
-        { dx: 0, dy: 0 },  // Center
-        { dx: 0, dy: -1 }, // Up
-        { dx: 0, dy: 0 },  // Return
-    ];
+    // Define bounce sequence based on whether stat increases or decreases
+    let bounceSequence;
+    if (stages > 0) {
+        bounceSequence = [
+            { dx: 0, dy: -0.5 },
+            { dx: 0, dy: 0 },
+            { dx: 0, dy: -0.5 },
+            { dx: 0, dy: 0 },
+            { dx: 0, dy: -0.5 },
+            { dx: 0, dy: 0 },
+        ];
+    } else {
+        bounceSequence = [
+            { dx: 0, dy: 0.5 },
+            { dx: 0, dy: 0 },
+            { dx: 0, dy: 0.5 },
+            { dx: 0, dy: 0 },
+            { dx: 0, dy: 0.5 },
+            { dx: 0, dy: 0 },
+        ];
+    }
     
-    // Execute bounce sequence
+    // Execute bounce sequence - ONLY for non-defeated Pokemon with INCREASING stats
     let currentIndex = 0;
-    const bounceInterval = setInterval(() => {
-        if (currentIndex >= bounceSequence.length) {
-            clearInterval(bounceInterval);
-            return;
+    let bounceInterval = null;
+
+    if (sprite && stages > 0) {  // Only bounce for positive stat changes
+        // Check if Pokemon is not defeated before bouncing
+        const isDefeated = charPos.isDefeated || 
+                        (charPos.character && 
+                        (charPos.character.isDefeated || 
+                            charPos.character.currentKP <= 0));
+        
+        if (!isDefeated) {
+            // Only do bounce if Pokemon is not defeated
+            bounceInterval = setInterval(() => {
+                if (currentIndex >= bounceSequence.length) {
+                    clearInterval(bounceInterval);
+                    return;
+                }
+                
+                const move = bounceSequence[currentIndex];
+                const newX = originalX + move.dx;
+                const newY = originalY + move.dy;
+                
+                // Try to update position using both methods
+                try {
+                    if (typeof updatePokemonPosition === 'function') {
+                        updatePokemonPosition(actualCharId, newX, newY);
+                    } else {
+                        // Direct sprite manipulation as fallback
+                        const pixelX = (newX * TILE_SIZE) + (TILE_SIZE / 2);
+                        const pixelY = (newY * TILE_SIZE) + (TILE_SIZE / 2);
+                        sprite.style.left = `${pixelX}px`;
+                        sprite.style.top = `${pixelY}px`;
+                    }
+                } catch (err) {
+                    console.warn('Error in bounce animation (non-critical):', err);
+                }
+                
+                currentIndex++;
+                
+                // Ensure return to original position at end of sequence
+                if (currentIndex >= bounceSequence.length) {
+                    try {
+                        if (typeof updatePokemonPosition === 'function') {
+                            updatePokemonPosition(actualCharId, originalX, originalY);
+                        } else {
+                            const pixelX = (originalX * TILE_SIZE) + (TILE_SIZE / 2);
+                            const pixelY = (originalY * TILE_SIZE) + (TILE_SIZE / 2);
+                            sprite.style.left = `${pixelX}px`;
+                            sprite.style.top = `${pixelY}px`;
+                        }
+                    } catch (err) {
+                        console.warn('Error resetting position (non-critical):', err);
+                    }
+                }
+            }, 150);
         }
-        
-        const move = bounceSequence[currentIndex];
-        const newX = originalX + move.dx;
-        const newY = originalY + move.dy;
-        
-        // Update visual position temporarily
-        updatePokemonPosition(charId, newX, newY);
-        
-        currentIndex++;
-        
-        // Ensure return to original position
-        if (currentIndex >= bounceSequence.length) {
-            updatePokemonPosition(charId, originalX, originalY);
-        }
-    }, 150);
+    }
     
     // Clean up after animation
     setTimeout(() => {
         // Ensure position is correct
-        updatePokemonPosition(charId, originalX, originalY);
+        if (sprite) {
+            try {
+                if (typeof updatePokemonPosition === 'function') {
+                    updatePokemonPosition(actualCharId, originalX, originalY);
+                } else {
+                    const pixelX = (originalX * TILE_SIZE) + (TILE_SIZE / 2);
+                    const pixelY = (originalY * TILE_SIZE) + (TILE_SIZE / 2);
+                    sprite.style.left = `${pixelX}px`;
+                    sprite.style.top = `${pixelY}px`;
+                }
+            } catch (err) {
+                console.warn('Error in final position reset (non-critical):', err);
+            }
+        }
         
         // Remove visual elements
-        if (arrowContainer.parentNode) arrowContainer.remove();
-        if (flash.parentNode) flash.remove();
+        if (bounceInterval) clearInterval(bounceInterval);
         
-        clearInterval(bounceInterval);
+        if (arrowContainer.parentNode) {
+            arrowContainer.remove();
+        }
+        
+        if (flash.parentNode) {
+            flash.remove();
+        }
         
         if (callback) callback();
-    }, 1000);
+    }, 1500);
 }
 
 /**

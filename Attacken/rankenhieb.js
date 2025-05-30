@@ -1,506 +1,486 @@
 /**
- * Special attack implementation for Rankenhieb (Vine Whip)
- * Can hit up to 2 targets in a line
+ * Rankenhieb (Vine Whip) attack for Pokemon battles - FIXED VERSION
  */
 
-import { TILE_SIZE } from '../config.js';
-import { getCharacterPositions } from '../characterPositions.js';
-import { createDamageNumber } from '../damageNumbers.js';
-import { rollDamageWithValue } from '../diceRoller.js';
-import { updateInitiativeHP } from '../initiativeDisplay.js';
-import { getTeamColor } from '../utils.js';
+import { TILE_SIZE, GRID_SIZE } from '../config.js';
+import { getCharacterPositions, isTileOccupied, updateCharacterPosition } from '../characterPositions.js';
+import { rollAttackDice } from '../diceRoller.js';
 import { logBattleEvent } from '../battleLog.js';
+import { applyAttackDamage } from '../damage.js';
+import { calculateFinalDamage } from '../damage.js';
+import { attemptEnhancedDodge } from '../dodgeSystem.js'; // Use enhanced dodge system
+import { doesPokemonOccupyTile } from '../pokemonDistanceCalculator.js';
 
-/**
- * Special class for Rankenhieb (Vine Whip) attacks
- */
-export class RankenhiebAttack {
-    /**
-     * Create a new Rankenhieb attack
-     * @param {Object} attacker - The Pokémon who used the attack
-     * @param {Object} target - The target position/Pokémon
-     * @param {Object} attack - The attack data (name, damage, etc.)
-     * @param {boolean} isHit - Whether the projectile is intended to hit
-     * @param {Function} callback - Function to call when destroyed
-     * @param {Array} activeProjectilesArray - Reference to the active projectiles array
-     */
-    constructor(attacker, target, attack, isHit = true, callback = null, activeProjectilesArray) {
-        this.id = Math.random().toString(36).substr(2, 9);
-        this.attacker = attacker;
-        this.target = target;
-        this.attack = attack;
-        this.isHit = isHit;
-        this.callback = callback;
-        this.attackName = "rankenhieb";
-        this.removed = false;
-        this.damage = attack.damage || 5; // Default damage for Rankenhieb is 5d6
-        this.teamIndex = attacker.teamIndex;
-        
-        // Store reference to the active projectiles array
-        this.activeProjectiles = activeProjectilesArray;
-        
-        // Store tile positions directly
-        this.attackerX = attacker.x;
-        this.attackerY = attacker.y;
-        this.targetX = target.x;
-        this.targetY = target.y;
-        
-        // Calculate direction vector for potential second target
-        const dx = this.targetX - this.attackerX;
-        const dy = this.targetY - this.attackerY;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        
-        if (distance > 0) {
-            this.dirX = dx / distance;
-            this.dirY = dy / distance;
-        } else {
-            this.dirX = 0;
-            this.dirY = 0;
+// Vine movement speed (in pixels per second)
+const VINE_SPEED = 500; // Adjustable speed for the vine animation
+
+// Add styles for the vine
+export function addRankenhiebStyles() {
+    // Check if styles are already added
+    if (document.getElementById('rankenhieb-styles')) return;
+    
+    const style = document.createElement('style');
+    style.id = 'rankenhieb-styles';
+    style.textContent = `
+        .rankenhieb-vine {
+            position: absolute;
+            height: 8px;
+            background-color: #2ecc71; /* Green */
+            transform-origin: left center;
+            z-index: 100;
+            border-radius: 4px;
+            box-shadow: 0 0 5px rgba(46, 204, 113, 0.7);
         }
-        
-        // Store creation time for animation timing
-        this.creationTime = Date.now();
-        
-        // Flag to track if damage has been applied
-        this.damageApplied = false;
-        this.fadingOut = false;
-        
-        // Track hit targets to avoid hitting the same target twice
-        this.hitTargets = new Set();
-        
-        // Create the visual element
-        this.element = this.createVisualElement();
-        
-        // Add to active projectiles
-        this.activeProjectiles.push(this);
-        
-        // Apply damage after 300ms
-        this.damageTimeout = setTimeout(() => this.applyDamage(), 300);
-        
-        // Start fade after 300ms
-        this.fadeTimeout = setTimeout(() => this.startFadeOut(), 300);
-        
-        // Destroy after 800ms total (300ms to hit + 500ms to fade)
-        this.destroyTimeout = setTimeout(() => this.destroy(), 800);
+    `;
+    document.head.appendChild(style);
+}
+
+// Main function to handle Rankenhieb attack
+export async function handleRankenhiebAttack(attacker, target, selectedAttack, charId, targetId) {
+    // Initialize attack result object
+    const attackResult = {
+        attacker: attacker.character.name,
+        target: target.character.name,
+        success: false,
+        attackRolls: [],
+        defenseRolls: [],
+        damage: 0,
+        log: []
+    };
+    
+    // Log attack
+    attackResult.log.push(`${attacker.character.name} benutzt ${selectedAttack.weaponName}.`);
+    
+    // Calculate GENA for attack roll
+    const genaValue = await getModifiedGena(attacker, selectedAttack);
+    
+    // Roll for attack
+    let attackRoll = rollAttackDice(genaValue);
+    attackResult.attackRolls.push(attackRoll);
+    
+    // Log attack roll
+    attackResult.log.push(`${attacker.character.name} greift ${target.character.name} mit ${selectedAttack.weaponName} an und würfelt: [${attackRoll.rolls.join(', ')}] - ${attackRoll.successes} Erfolge, ${attackRoll.failures} Fehlschläge = ${attackRoll.netSuccesses} Netto.`);
+    
+    // Handle luck tokens and forcing
+    attackRoll = await handleLuckTokensAndForcing(attacker, attackRoll, genaValue, charId, attackResult);
+    
+    // Determine target tile based on hit/miss
+    let targetTile;
+    
+    if (attackRoll.netSuccesses > 0) {
+        // Hit - use the target's position
+        targetTile = { x: target.x, y: target.y };
+        attackResult.success = true;
+        attackResult.log.push(`${attacker.character.name}s Rankenhieb trifft!`);
+    } else {
+        // Miss - find a random tile at max range or in range
+        targetTile = findRandomTileForMiss(attacker, selectedAttack.range);
+        attackResult.log.push(`${attacker.character.name}s Rankenhieb verfehlt das Ziel und schlägt bei (${targetTile.x}, ${targetTile.y}) ein!`);
     }
     
-    /**
-     * Create visual element for Rankenhieb
-     * @returns {HTMLElement} - The tether DOM element
-     */
-    createVisualElement() {
-        // Find the battlefield for positioning reference
-        const battlefield = document.querySelector('.battlefield-grid');
-        if (!battlefield) {
-            console.error('Battlefield element not found for Rankenhieb positioning');
-            return document.createElement('div'); // Return empty div to prevent errors
-        }
+    // Give characters a chance to dodge and track successful dodgers
+    const dodgePromises = [];
+    const characterPositions = getCharacterPositions();
+    const successfulDodgers = new Map(); // Track Pokemon that successfully dodge
+    
+    // Identify all potential Pokemon in the line
+    const potentialTargets = findPokemonInLine(attacker, targetTile);
+    
+    // Allow each potential target to attempt dodge
+    for (const potTarget of potentialTargets) {
+        // Skip the attacker
+        if (potTarget.id === charId) continue;
         
-        // Calculate the center points of attacker and target tiles
-        const attackerCenterX = (this.attackerX + 0.5) * TILE_SIZE;
-        const attackerCenterY = (this.attackerY + 0.5) * TILE_SIZE;
-        const targetCenterX = (this.targetX + 0.5) * TILE_SIZE;
-        const targetCenterY = (this.targetY + 0.5) * TILE_SIZE;
-        
-        // Get distance between centers
-        const dx = targetCenterX - attackerCenterX;
-        const dy = targetCenterY - attackerCenterY;
-        const length = Math.sqrt(dx * dx + dy * dy);
-        
-        // Calculate the angle from attacker to target
-        const angle = Math.atan2(dy, dx) * (180 / Math.PI);
-        
-        // Create the main vine element
-        const vineElement = document.createElement('div');
-        vineElement.className = 'rankenhieb-vine';
-        vineElement.style.position = 'absolute';
-        vineElement.style.width = `${length}px`;
-        vineElement.style.height = '6px';
-        vineElement.style.backgroundColor = '#4CAF50';
-        vineElement.style.boxShadow = '0 0 5px rgba(76, 175, 80, 0.7)';
-        vineElement.style.borderRadius = '3px';
-        vineElement.style.zIndex = '100';
-        vineElement.style.transformOrigin = 'left center';
-        vineElement.style.transition = 'opacity 0.5s ease-out';
-        
-        // Create a wrapper div to position the vine and handle animation
-        const wrapperElement = document.createElement('div');
-        wrapperElement.className = 'projectile rankenhieb';
-        wrapperElement.dataset.projectileId = this.id;
-        wrapperElement.style.position = 'absolute';
-        wrapperElement.style.left = `${attackerCenterX}px`;
-        wrapperElement.style.top = `${attackerCenterY}px`;
-        wrapperElement.style.width = '0';
-        wrapperElement.style.height = '0';
-        wrapperElement.style.zIndex = '100';
-        wrapperElement.style.transformOrigin = 'left center';
-        
-        // Add the vine to the wrapper
-        wrapperElement.appendChild(vineElement);
-        
-        // Apply the rotation and position
-        vineElement.style.transform = `rotate(${angle}deg)`;
-        
-        // Add to the battlefield
-        battlefield.appendChild(wrapperElement);
-        
-        // Add bulbs at start and end of vine
-        const startBulb = document.createElement('div');
-        startBulb.className = 'rankenhieb-bulb start-bulb';
-        startBulb.style.position = 'absolute';
-        startBulb.style.left = '0';
-        startBulb.style.top = '0';
-        startBulb.style.width = '10px';
-        startBulb.style.height = '10px';
-        startBulb.style.borderRadius = '50%';
-        startBulb.style.backgroundColor = '#4CAF50';
-        startBulb.style.boxShadow = '0 0 5px rgba(76, 175, 80, 0.7)';
-        startBulb.style.transform = 'translate(-50%, -50%)';
-        startBulb.style.zIndex = '101';
-        
-        const endBulb = document.createElement('div');
-        endBulb.className = 'rankenhieb-bulb end-bulb';
-        endBulb.style.position = 'absolute';
-        endBulb.style.left = `${length}px`;
-        endBulb.style.top = '0';
-        endBulb.style.width = '10px';
-        endBulb.style.height = '10px';
-        endBulb.style.borderRadius = '50%';
-        endBulb.style.backgroundColor = '#4CAF50';
-        endBulb.style.boxShadow = '0 0 5px rgba(76, 175, 80, 0.7)';
-        endBulb.style.transform = 'translate(-50%, -50%)';
-        endBulb.style.zIndex = '101';
-        
-        vineElement.appendChild(startBulb);
-        vineElement.appendChild(endBulb);
-        
-        // Force a reflow and apply animation 
-        void vineElement.offsetWidth;
-        vineElement.style.animation = 'rankenhiebGrow 0.2s ease-out forwards';
-        
-        return wrapperElement;
+        const dodgePromise = attemptEnhancedDodgeWithDelay(
+            attacker, 
+            characterPositions[potTarget.id], 
+            attackRoll, 
+            selectedAttack, 
+            potTarget.id,
+            successfulDodgers
+        );
+        dodgePromises.push(dodgePromise);
     }
     
-    /**
-     * Apply damage to targets in the line
-     */
-    applyDamage() {
-        if (this.damageApplied || this.removed) return;
-        
-        // Mark damage as applied
-        this.damageApplied = true;
-        
-        // Find targets in line (up to 2)
-        const targets = this.findTargetsInLine();
-        
-        // Apply damage to each target
-        targets.forEach(target => {
-            // Skip if already hit
-            if (this.hitTargets.has(target.id)) return;
-            
-            // Mark as hit
-            this.hitTargets.add(target.id);
-            
-            // Calculate damage
-            const damageRoll = this.calculateDamage(target);
-            
-            // Apply damage
-            this.applyDamageToTarget(target, damageRoll);
-            
-            // Log hit message
-            logBattleEvent(`${this.attacker.character.name}'s Rankenhieb trifft ${target.character.name} für ${damageRoll.total} Schaden!`);
+    // Wait for all dodge attempts to complete
+    await Promise.all(dodgePromises);
+    
+    // Create and animate the vine
+    const vinePromise = new Promise((resolveVine) => {
+        createRankenhiebVine(attacker, targetTile, () => {
+            resolveVine();
         });
-    }
+    });
     
-    /**
-     * Find targets in line from attacker through target point (up to 2)
-     * @returns {Array} - Array of targets in the line
-     */
-    findTargetsInLine() {
-        const characterPositions = getCharacterPositions();
-        const targets = [];
-        
-        // Exclude the attacker
-        const attacker = this.attacker;
-        
-        // Calculate the line from attacker to target and beyond
-        const lineLength = 3; // Check up to 3 tiles for 2 potential targets
-        
-        // Find the closest candidates first
-        for (const charId in characterPositions) {
-            const charPos = characterPositions[charId];
+    // Wait for vine animation to complete
+    await vinePromise;
+    
+    // Identify Pokemon that were hit by the vine after dodging
+    // Use updated positions for Pokemon that successfully dodged
+    const hitTargets = findPokemonTouchingVineWithDodgers(attacker, targetTile, successfulDodgers);
+    
+    if (attackRoll.netSuccesses > 0 && targetId && !successfulDodgers.has(targetId)) {
+        const targetInHitTargets = hitTargets.some(hitTarget => hitTarget.id === targetId);
+        if (!targetInHitTargets) {
+            // Add the target to hitTargets
+            const currentCharacterPositions = getCharacterPositions();
+            const currentTarget = currentCharacterPositions[targetId];
             
-            // Skip if character is defeated or dodging
-            if (charPos.isDefeated || charPos.isDodging) continue;
-            
-            // Skip the attacker
-            if (charPos === attacker) continue;
-            
-            // Check if this character is close to the line
-            if (this.isPositionNearLine(charPos, lineLength)) {
-                // Calculate distance from attacker
-                const dx = charPos.x - this.attackerX;
-                const dy = charPos.y - this.attackerY;
-                const distance = Math.sqrt(dx * dx + dy * dy);
-                
-                // Add to potential targets with distance
-                targets.push({
-                    id: charId,
-                    character: charPos.character,
-                    position: charPos,
-                    teamIndex: charPos.teamIndex,
-                    distance: distance
+            if (currentTarget) {
+                hitTargets.push({
+                    id: targetId,
+                    position: currentTarget
                 });
             }
         }
+    }
+
+    // Apply damage to all hit targets
+    for (const hitTarget of hitTargets) {
+        // Skip the attacker
+        if (hitTarget.id === charId) continue;
         
-        // Sort by distance from attacker and limit to 2 targets
-        return targets
-            .sort((a, b) => a.distance - b.distance)
-            .slice(0, 2);
+        // Get current position (might be updated due to dodging)
+        const currentCharacterPositions = getCharacterPositions();
+        const currentTarget = currentCharacterPositions[hitTarget.id];
+        
+        if (!currentTarget) continue;
+        
+        const damageData = calculateFinalDamage(selectedAttack, currentTarget, attacker, attackRoll);
+        
+        // Apply damage using the damage system
+        await applyAttackDamage(
+            attacker, 
+            currentTarget, 
+            selectedAttack, 
+            damageData.finalDamage, 
+            {
+                isCritical: damageData.isCritical,
+                attackerId: charId,
+                targetId: hitTarget.id,
+                effectiveness: damageData.effectivenessType
+            }
+        );
+        
+        // Log the hit
+        attackResult.log.push(`${currentTarget.character.name} wird von Rankenhieb getroffen und erleidet ${damageData.finalDamage} Schaden!`);
     }
     
-    /**
-     * Check if a position is near the line from attacker to target
-     * @param {Object} position - Position to check
-     * @param {number} maxDistance - Maximum distance to check along the line
-     * @returns {boolean} - Whether the position is near the line
-     */
-    isPositionNearLine(position, maxDistance) {
-        // Get position in tile coordinates
-        const posX = position.x;
-        const posY = position.y;
+    // Return the attack result
+    return attackResult;
+}
+
+// Enhanced dodge function that properly updates positions
+async function attemptEnhancedDodgeWithDelay(attacker, target, attackRoll, selectedAttack, targetId, successfulDodgers) {
+    // Small delay to make dodges feel more natural
+    await new Promise(resolve => setTimeout(resolve, 50 + Math.random() * 100));
+    
+    // Attempt the enhanced dodge (this returns position info)
+    const dodgeResult = await attemptEnhancedDodge(attacker, target, attackRoll, selectedAttack);
+    
+    if (dodgeResult.success && dodgeResult.position) {
+        // Execute the dodge animation and position update
+        const { animateDodge } = await import('../animationManager.js');
         
-        // Calculate displacement vector from attacker to position
-        const dx = posX - this.attackerX;
-        const dy = posY - this.attackerY;
+        // Animate the dodge
+        animateDodge(targetId, dodgeResult.position, () => {
+            // Update the character position in the global positions
+            updateCharacterPosition(targetId, dodgeResult.position);
+        });
         
-        // Project this vector onto the line direction
-        const projection = dx * this.dirX + dy * this.dirY;
+        // Track this Pokemon as having successfully dodged with new position
+        successfulDodgers.set(targetId, dodgeResult.position);
         
-        // If projection is negative or too far, point is not on the line segment
-        if (projection < 0 || projection > maxDistance) {
-            return false;
+        logBattleEvent(`${target.character.name} weicht dem Rankenhieb aus!`);
+    } else {
+        logBattleEvent(`${target.character.name} kann dem Rankenhieb nicht ausweichen!`);
+    }
+    
+    return dodgeResult;
+}
+
+// Find all Pokemon that touch the vine, accounting for successful dodgers
+function findPokemonTouchingVineWithDodgers(attacker, targetTile, successfulDodgers) {
+    const characterPositions = getCharacterPositions();
+    const hitTargets = [];
+    
+    // Calculate the line parameters for the vine
+    const dx = targetTile.x - attacker.x;
+    const dy = targetTile.y - attacker.y;
+    const distance = Math.max(Math.abs(dx), Math.abs(dy));
+    
+    // Normalize direction
+    const stepX = dx === 0 ? 0 : dx / Math.abs(dx);
+    const stepY = dy === 0 ? 0 : dy / Math.abs(dy);
+    
+    // Create a set of all tiles the vine passes through
+    const vineTiles = new Set();
+    for (let i = 0; i <= distance; i++) {
+        const x = Math.round(attacker.x + stepX * i);
+        const y = Math.round(attacker.y + stepY * i);
+        vineTiles.add(`${x},${y}`);
+    }
+    
+    // Check each character to see if it touches the vine
+    for (const charId in characterPositions) {
+        const charPos = characterPositions[charId];
+        
+        // Skip the attacker
+        if (charPos === attacker) continue;
+        
+        // Skip already defeated characters
+        if (charPos.isDefeated) continue;
+        
+        // Use updated position if this Pokemon successfully dodged
+        let checkPosition = charPos;
+        if (successfulDodgers.has(charId)) {
+            const dodgedPosition = successfulDodgers.get(charId);
+            checkPosition = {
+                ...charPos,
+                x: dodgedPosition.x,
+                y: dodgedPosition.y
+            };
         }
         
-        // Calculate the closest point on the line
-        const lineX = this.attackerX + projection * this.dirX;
-        const lineY = this.attackerY + projection * this.dirY;
+        // Check if any of the tiles this Pokemon occupies touches the vine
+        const pokeSize = checkPosition.character.sizeCategory || 1;
+        const radius = Math.floor(pokeSize / 2);
         
-        // Calculate perpendicular distance to the line
-        const perpDx = posX - lineX;
-        const perpDy = posY - lineY;
-        const distance = Math.sqrt(perpDx * perpDx + perpDy * perpDy);
+        let touchesVine = false;
         
-        // Check if within threshold (0.75 tile width is generous enough to hit)
-        return distance <= 0.75;
-    }
-    
-    /**
-     * Calculate damage for a target
-     * @param {Object} target - Target data
-     * @returns {Object} - Damage roll result
-     */
-    calculateDamage(target) {
-        // Use basic damage roll for simplicity
-        return rollDamageWithValue(this.damage);
-    }
-    
-    /**
-     * Apply damage to a specific target
-     * @param {Object} target - Target data
-     * @param {Object} damageRoll - Damage roll data
-     */
-    applyDamageToTarget(target, damageRoll) {
-        // Skip if character is already defeated
-        if (target.character.currentKP <= 0) {
-            return;
-        }
-        
-        // Show damage number
-        createDamageNumber(damageRoll.total, target.position, damageRoll.total >= 8);
-        
-        // Apply damage to target's health
-        const oldKP = parseInt(target.character.currentKP, 10);
-        const damageAmount = parseInt(damageRoll.total, 10);
-        target.character.currentKP = Math.max(0, oldKP - damageAmount);
-        
-        // Update HP bar visually
-        const targetTile = document.querySelector(`.battlefield-tile[data-x="${target.position.x}"][data-y="${target.position.y}"]`);
-        if (targetTile) {
-            const hpBar = targetTile.querySelector(`.character-hp-bar-container[data-character-id="${target.id}"] .character-hp-bar`);
-            if (hpBar) {
-                const maxHP = target.character.maxKP || target.character.combatStats.kp || 10;
-                const currentHP = target.character.currentKP;
-                const hpPercent = Math.max(0, Math.min(100, (currentHP / maxHP) * 100));
+        // Check all tiles the Pokemon occupies
+        for (let dx = -radius; dx <= radius && !touchesVine; dx++) {
+            for (let dy = -radius; dy <= radius && !touchesVine; dy++) {
+                const tileX = checkPosition.x + dx;
+                const tileY = checkPosition.y + dy;
                 
-                // Update width to show current health percentage
-                hpBar.style.width = `${hpPercent}%`;
-                
-                // Update color based on remaining HP
-                if (currentHP <= 0) {
-                    // Character defeated
-                    hpBar.style.width = '0%';
-                    hpBar.style.backgroundColor = '#7f0000'; // Dark red for defeated
-                    
-                    // Mark character as defeated
-                    target.position.isDefeated = true;
-                    
-                    // Log defeat
-                    logBattleEvent(`${target.character.name} is defeated and leaves the battle!`);
-                    
-                    // Handle defeated character removal
-                    import('../characterPositions.js').then(module => {
-                        module.removeDefeatedCharacter(target.id);
-                    });
-                } else if (currentHP <= maxHP * 0.25) {
-                    hpBar.style.backgroundColor = '#e74c3c'; // Red for low HP
-                } else if (currentHP <= maxHP * 0.5) {
-                    hpBar.style.backgroundColor = '#f39c12'; // Orange for medium HP
-                } else {
-                    hpBar.style.backgroundColor = getTeamColor(target.teamIndex); // Team color for healthy
+                // Check if this tile is part of the vine
+                if (vineTiles.has(`${tileX},${tileY}`)) {
+                    touchesVine = true;
+                    break;
                 }
             }
         }
         
-        // Update initiative HP display
-        updateInitiativeHP();
-    }
-    
-    /**
-     * Start the fade out animation
-     */
-    startFadeOut() {
-        if (this.removed) return;
-        
-        this.fadingOut = true;
-        
-        // Gradually reduce opacity to create fade out effect
-        if (this.element) {
-            this.element.style.opacity = '0';
+        if (touchesVine) {
+            hitTargets.push({
+                id: charId,
+                position: checkPosition
+            });
         }
     }
     
-    /**
-     * Update method (called each frame)
-     * @param {number} deltaTime - Time since last update in seconds
-     * @returns {boolean} - Whether the projectile should be kept
-     */
-    update(deltaTime) {
-        // If already marked as removed, stop updating
-        if (this.removed) return false;
-        
-        // The update for Rankenhieb just checks if it's time to apply damage if not yet applied
-        const currentTime = Date.now();
-        const age = currentTime - this.creationTime;
-        
-        // Apply damage after 300ms
-        if (age >= 300 && !this.damageApplied) {
-            this.applyDamage();
-        }
-        
-        // Start fade after 300ms
-        if (age >= 300 && !this.fadingOut) {
-            this.startFadeOut();
-        }
-        
-        // Destroy after 800ms total
-        if (age >= 800) {
-            this.destroy();
-            return false;
-        }
-        
-        return true;
+    return hitTargets;
+}
+
+// Create and animate the Rankenhieb vine
+function createRankenhiebVine(attacker, targetTile, callback) {
+    // Find the battlefield grid for positioning
+    const battlefieldGrid = document.querySelector('.battlefield-grid');
+    if (!battlefieldGrid) {
+        if (callback) callback();
+        return;
     }
     
-    /**
-     * Destroy the Rankenhieb attack
-     */
-    destroy() {
-        // If already marked as removed, avoid duplicate processing
-        if (this.removed) return;
-        
-        // Mark as removed
-        this.removed = true;
-        
-        // Clear timeouts
-        if (this.damageTimeout) clearTimeout(this.damageTimeout);
-        if (this.fadeTimeout) clearTimeout(this.fadeTimeout);
-        if (this.destroyTimeout) clearTimeout(this.destroyTimeout);
-        
-        // Remove visual element
-        if (this.element && this.element.parentNode) {
-            this.element.parentNode.removeChild(this.element);
+    // Calculate the start and end positions in pixels
+    const startX = (attacker.x * TILE_SIZE) + (TILE_SIZE / 2);
+    const startY = (attacker.y * TILE_SIZE) + (TILE_SIZE / 2);
+    const endX = (targetTile.x * TILE_SIZE) + (TILE_SIZE / 2);
+    const endY = (targetTile.y * TILE_SIZE) + (TILE_SIZE / 2);
+    
+    // Calculate the length and angle of the vine
+    const dx = endX - startX;
+    const dy = endY - startY;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+    
+    // Create the vine element
+    const vine = document.createElement('div');
+    vine.className = 'rankenhieb-vine';
+    vine.style.position = 'absolute';
+    vine.style.left = `${startX}px`;
+    vine.style.top = `${startY}px`;
+    vine.style.width = '0px'; // Start with zero width
+    vine.style.height = '8px';
+    vine.style.transformOrigin = 'left center';
+    vine.style.transform = `rotate(${angle}deg)`;
+    vine.style.transition = `width ${distance / VINE_SPEED}s linear`;
+    
+    // Add to the battlefield
+    battlefieldGrid.appendChild(vine);
+    
+    // Animate the vine extension
+    setTimeout(() => {
+        vine.style.width = `${distance}px`;
+    }, 10);
+    
+    // Wait for extension to complete
+    setTimeout(() => {
+        // Add a small delay at full extension
+        setTimeout(() => {
+            // Animate retraction
+            vine.style.width = '0px';
+            
+            // Remove vine after retraction
+            setTimeout(() => {
+                if (vine.parentNode) {
+                    vine.parentNode.removeChild(vine);
+                }
+                if (callback) callback();
+            }, distance / VINE_SPEED * 1000);
+        }, 200); // Small delay at full extension
+    }, distance / VINE_SPEED * 1000 + 50);
+}
+
+// Create and initialize a Rankenhieb projectile (compatible with projectile system)
+export function createRankenhieb(attacker, target, attack, isHit, callback, activeProjectiles) {
+    // Call the implementation directly
+    createRankenhiebVine(attacker, target, callback);
+    
+    // Return a dummy projectile object for compatibility
+    return {
+        id: `rankenhieb_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+        attacker: attacker,
+        target: target,
+        attack: attack,
+        isHit: isHit,
+        callback: null, // Already handled by createRankenhiebVine
+        removed: false,
+        update: () => true, // No updates needed
+        destroy: () => {
+            // No special cleanup needed
+            return true;
         }
-        
-        // Remove from active projectiles array
-        const index = this.activeProjectiles.findIndex(p => p.id === this.id);
-        if (index !== -1) {
-            this.activeProjectiles.splice(index, 1);
-        }
-        
-        // Call the callback if provided
-        if (this.callback) {
-            try {
-                this.callback();
-            } catch (error) {
-                console.error("Error in Rankenhieb callback:", error);
+    };
+}
+
+// Find a random tile at max range distance, or any random tile in range
+function findRandomTileForMiss(attacker, range) {
+    const potentialTiles = [];
+    
+    // Check tiles at max range first
+    for (let x = attacker.x - range; x <= attacker.x + range; x++) {
+        for (let y = attacker.y - range; y <= attacker.y + range; y++) {
+            // Skip out of bounds tiles
+            if (x < 0 || y < 0 || x >= GRID_SIZE || y >= GRID_SIZE) continue;
+            
+            // Calculate Manhattan distance
+            const distance = Math.abs(x - attacker.x) + Math.abs(y - attacker.y);
+            
+            // Check if at max range
+            if (distance === range) {
+                // Check if tile is empty (no Pokemon)
+                if (!isTileOccupied(x, y)) {
+                    potentialTiles.push({ x, y, isMaxRange: true });
+                }
+            } else if (distance < range) {
+                // Store in-range tiles as fallback
+                if (!isTileOccupied(x, y)) {
+                    potentialTiles.push({ x, y, isMaxRange: false });
+                }
             }
         }
     }
+    
+    // Filter for max range tiles first
+    const maxRangeTiles = potentialTiles.filter(tile => tile.isMaxRange);
+    
+    // If we have max range tiles, pick one randomly
+    if (maxRangeTiles.length > 0) {
+        const randomIndex = Math.floor(Math.random() * maxRangeTiles.length);
+        return maxRangeTiles[randomIndex];
+    }
+    
+    // Fallback to any in-range tile
+    if (potentialTiles.length > 0) {
+        const randomIndex = Math.floor(Math.random() * potentialTiles.length);
+        return potentialTiles[randomIndex];
+    }
+    
+    // Last resort: just return a tile at the edge of range
+    return {
+        x: attacker.x + (attacker.x < GRID_SIZE / 2 ? range : -range),
+        y: attacker.y
+    };
 }
 
-/**
- * Create a new Rankenhieb attack
- * @param {Object} attacker - The attacker Pokémon
- * @param {Object} target - The target Pokémon/position
- * @param {Object} attack - The attack data
- * @param {boolean} isHit - Whether the attack should hit or miss
- * @param {Function} callback - Function to call when attack is complete
- * @param {Array} activeProjectiles - Reference to the active projectiles array
- * @returns {RankenhiebAttack} - The created Rankenhieb attack
- */
-export function createRankenhieb(attacker, target, attack, isHit, callback, activeProjectiles) {
-    return new RankenhiebAttack(attacker, target, attack, isHit, callback, activeProjectiles);
-}
-
-/**
- * Add the Rankenhieb CSS to the document
- */
-export function addRankenhiebStyles() {
-    // Check if styles already exist
-    if (document.getElementById('rankenhieb-styles')) return;
+// Find all Pokemon that lie in a line between attacker and target
+function findPokemonInLine(attacker, targetTile) {
+    const characterPositions = getCharacterPositions();
+    const potentialTargets = [];
     
-    // Create style element
-    const styleElement = document.createElement('style');
-    styleElement.id = 'rankenhieb-styles';
+    // Calculate the line parameters
+    const dx = targetTile.x - attacker.x;
+    const dy = targetTile.y - attacker.y;
+    const distance = Math.max(Math.abs(dx), Math.abs(dy));
     
-    // Define the CSS
-    styleElement.textContent = `
-        /* Rankenhieb (Vine Whip) styling */
-        .rankenhieb-vine {
-            background: linear-gradient(to right, #4CAF50, #8BC34A);
-            height: 6px;
-            border-radius: 3px;
-            box-shadow: 0 0 8px rgba(76, 175, 80, 0.5);
-            position: absolute;
-            left: 0;
-            top: 0;
-            transform-origin: left center;
-        }
-
-        /* Styling for the Rankenhieb growth animation */
-        @keyframes rankenhiebGrow {
-            0% { transform: scaleX(0) rotate(var(--angle)); }
-            100% { transform: scaleX(1) rotate(var(--angle)); }
-        }
+    // Check each character to see if it's on the line
+    for (const charId in characterPositions) {
+        const charPos = characterPositions[charId];
         
-        /* Faster fade-out for rankenhieb */
-        .projectile.rankenhieb {
-            transition: opacity 0.5s ease-out;
+        // Skip the attacker
+        if (charPos === attacker) continue;
+        
+        // Skip already defeated characters
+        if (charPos.isDefeated) continue;
+        
+        // Check if this Pokemon is on the line
+        if (isPokemonOnLine(attacker, targetTile, charPos)) {
+            potentialTargets.push({
+                id: charId,
+                position: charPos
+            });
         }
-    `;
+    }
     
-    // Add to document head
-    document.head.appendChild(styleElement);
+    return potentialTargets;
+}
+
+// Check if a Pokemon lies on the line between two points
+function isPokemonOnLine(attacker, targetTile, pokemonPos) {
+    // Calculate the line parameters
+    const dx = targetTile.x - attacker.x;
+    const dy = targetTile.y - attacker.y;
+    const distance = Math.max(Math.abs(dx), Math.abs(dy));
+    
+    // Normalize direction
+    const stepX = dx === 0 ? 0 : dx / Math.abs(dx);
+    const stepY = dy === 0 ? 0 : dy / Math.abs(dy);
+    
+    // Check each point along the line
+    for (let i = 1; i <= distance; i++) {
+        const x = Math.round(attacker.x + stepX * i);
+        const y = Math.round(attacker.y + stepY * i);
+        
+        // Check if the Pokemon occupies this tile
+        if (doesPokemonOccupyTile(pokemonPos, x, y)) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+// Get modified GENA value from attackSystem.js
+async function getModifiedGena(attacker, attack) {
+    try {
+        const { getModifiedGena } = await import('../attackSystem.js');
+        return getModifiedGena(attacker, attack);
+    } catch (error) {
+        console.error('Error importing getModifiedGena:', error);
+        // Fallback to a basic calculation
+        return attacker.character.combatStats?.gena || 1;
+    }
+}
+
+// Handle luck tokens and forcing from attackSystem.js
+async function handleLuckTokensAndForcing(attacker, attackRoll, genaValue, charId, attackResult) {
+    try {
+        const { handleLuckTokensAndForcing } = await import('../attackSystem.js');
+        return await handleLuckTokensAndForcing(attacker, attackRoll, genaValue, charId, attackResult);
+    } catch (error) {
+        console.error('Error importing handleLuckTokensAndForcing:', error);
+        // Fallback to just returning the original roll
+        return attackRoll;
+    }
 }

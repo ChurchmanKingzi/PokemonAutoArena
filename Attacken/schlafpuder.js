@@ -4,14 +4,10 @@
  */
 
 import { TILE_SIZE } from '../config.js';
-import { addStatusEffect, hasStatusEffect } from '../statusEffects.js';
-import { logBattleEvent } from '../battleLog.js';
-import { 
-    createConeIndicator, 
-    removeConeIndicator, 
-    findCharactersInCone,
-    isPositionInCone 
-} from '../attackCone.js';
+import { hasStatusEffect, hasStatusImmunity } from '../statusEffects.js';
+import { createConeIndicator, removeConeIndicator, findCharactersInCone,isPositionInCone } from '../attackCone.js';
+import { addStatusEffect } from '../statusEffects.js';
+import { applyVisualHitEffect } from '../coneHits.js';
 
 // Constants
 const DEFAULT_CONE_ANGLE = 45;
@@ -52,6 +48,20 @@ export class SchlafpuderAttack {
         this.creationTime = Date.now();
         this.statusApplied = false;
         
+        // Handle miss case - calculate a new direction
+        if (!this.isHit) {
+            // Display miss message over the original target
+            import('../damageNumbers.js').then(module => {
+                module.createMissMessage(this.target);
+            });
+            
+            // Calculate effective target direction (missed angle)
+            this.effectiveTarget = this.calculateMissDirection();
+        } else {
+            // If hit, use the original target direction
+            this.effectiveTarget = this.target;
+        }
+        
         // Create the cone and particles
         this.createVisualElements();
         
@@ -64,13 +74,49 @@ export class SchlafpuderAttack {
     }
     
     /**
-     * Create the visual elements for sleep powder
+     * Calculate a random direction for a missed cone attack
+     * that ensures the original target is NOT in the cone
+     * @returns {Object} - New target direction {x, y}
      */
+    calculateMissDirection() {
+        // Original direction vector from attacker to target
+        const dx = this.target.x - this.attacker.x;
+        const dy = this.target.y - this.attacker.y;
+        const originalDistance = Math.sqrt(dx * dx + dy * dy);
+        
+        // Original angle (in radians)
+        const originalAngle = Math.atan2(dy, dx);
+        
+        // Cone half-angle in radians
+        const coneHalfAngle = (this.coneAngle / 2) * (Math.PI / 180);
+        
+        // Generate a random angle that's outside the cone angle
+        // to ensure the original target is NOT in the new cone
+        let offsetAngle;
+        if (Math.random() < 0.5) {
+            // Miss to the left
+            offsetAngle = coneHalfAngle + (Math.random() * Math.PI / 4); // 0-45 degrees outside cone
+        } else {
+            // Miss to the right
+            offsetAngle = -coneHalfAngle - (Math.random() * Math.PI / 4); // 0-45 degrees outside cone
+        }
+        
+        // Calculate new direction
+        const newAngle = originalAngle + offsetAngle;
+        
+        // Calculate new target position at the same distance
+        const newX = this.attacker.x + Math.cos(newAngle) * originalDistance;
+        const newY = this.attacker.y + Math.sin(newAngle) * originalDistance;
+        
+        return { x: newX, y: newY };
+    }
+    
+    // Update createVisualElements to use effectiveTarget
     createVisualElements() {
         // First create the cone indicator
         this.coneElement = createConeIndicator(
             this.attacker, 
-            this.target, 
+            this.effectiveTarget, // Use effective target
             this.range, 
             this.coneAngle, 
             'schlafpuder',
@@ -148,7 +194,7 @@ export class SchlafpuderAttack {
      */
     getRandomPositionInCone() {
         const attacker = this.attacker;
-        const targetDirection = this.target;
+        const targetDirection = this.effectiveTarget;
         const range = this.range;
         
         // Try random positions until we find one in the cone
@@ -189,116 +235,52 @@ export class SchlafpuderAttack {
     
     /**
      * Find all valid targets in the cone
-     * @returns {Array} - Array of valid targets
+     * @returns {Promise<Array>} - Array of valid targets
      */
-    findValidTargets() {
+    async findValidTargets() {
         // Get all characters in the cone
         const charactersInCone = findCharactersInCone(
             this.attacker, 
-            this.target, 
+            this.effectiveTarget, 
             this.range, 
             this.coneAngle
         );
         
-        // Filter out invalid targets:
-        // - Attacker (self)
-        // - Grass-type Pokemon
-        // - Already sleeping Pokemon
-        // - Pokemon with Insomnia or Vital Spirit abilities
-        const validTargets = charactersInCone.filter(target => {
+        // Filter out invalid targets using the new status immunity system
+        const validTargets = [];
+        
+        for (const target of charactersInCone) {
             // Skip attacker
-            if (target.character === this.attacker.character) return false;
+            if (target.character === this.attacker.character) continue;
             
-            // Check if already has the sleep status
-            if (hasStatusEffect(target.character, 'asleep')) {
-                return false;
+            // Check immunity using the comprehensive immunity system
+            const isImmune = await hasStatusImmunity(target.character, 'asleep', {
+                attacker: this.attacker.character,
+                targetPosition: { x: target.x, y: target.y },
+                attackerPosition: { x: this.attacker.x, y: this.attacker.y }
+            });
+            
+            if (!isImmune && !(types.includes('grass') || types.includes('pflanze'))) {
+                validTargets.push(target);
             }
-            
-            const pokemon = target.character;
-            
-            // Check for Grass type immunity
-            if (pokemon.pokemonTypes) {
-                const types = pokemon.pokemonTypes.map(type => 
-                    typeof type === 'string' ? type.toLowerCase() : ""
-                );
-                
-                // Grass types are immune
-                if (types.includes('grass') || types.includes('pflanze')) {
-                    return false;
-                }
-            }
-            
-            // Check for insomnia or vital spirit abilities
-            if (this.hasSleepImmunityAbility(pokemon)) {
-                return false;
-            }
-            
-            return true;
-        });
+        }
         
         return validTargets;
     }
     
     /**
-     * Check if a Pokemon has an ability that makes it immune to sleep
-     * @param {Object} pokemon - Pokemon to check
-     * @returns {boolean} - Whether the Pokemon is immune to sleep
-     */
-    hasSleepImmunityAbility(pokemon) {
-        if (!pokemon) return false;
-        
-        const immuneAbilities = ['insomnia', 'vital spirit', 'munterkeit'];
-        
-        // Check in abilities array
-        if (pokemon.abilities && Array.isArray(pokemon.abilities)) {
-            for (const ability of pokemon.abilities) {
-                if (ability && ability.name) {
-                    const lowerName = ability.name.toLowerCase();
-                    if (immuneAbilities.some(a => lowerName.includes(a))) {
-                        return true;
-                    }
-                }
-                
-                if (ability && ability.description) {
-                    const lowerDesc = ability.description.toLowerCase();
-                    if (immuneAbilities.some(a => lowerDesc.includes(a))) {
-                        return true;
-                    }
-                }
-            }
-        }
-        
-        // Check in ability property
-        if (pokemon.ability) {
-            if (typeof pokemon.ability === 'string') {
-                const lowerName = pokemon.ability.toLowerCase();
-                if (immuneAbilities.some(a => lowerName.includes(a))) {
-                    return true;
-                }
-            } else if (pokemon.ability.name) {
-                const lowerName = pokemon.ability.name.toLowerCase();
-                if (immuneAbilities.some(a => lowerName.includes(a))) {
-                    return true;
-                }
-            }
-        }
-        
-        return false;
-    }
-    
-    /**
      * Apply sleep status to valid targets
      */
-    applySleepStatus() {
+    async applySleepStatus() {
         if (this.statusApplied || this.removed) return;
         
         // Mark status as applied
         this.statusApplied = true;
         
         // Find valid targets
-        const validTargets = this.findValidTargets();
+        const validTargets = await this.findValidTargets();
         
-        // Apply sleep status to each valid target
+        // Apply sleep to each valid target
         validTargets.forEach(target => {
             const applied = addStatusEffect(target.character, 'asleep', {
                 sourceId: this.attacker.character.uniqueId,
@@ -306,17 +288,13 @@ export class SchlafpuderAttack {
             });
             
             if (applied) {
-                // Apply visual flash effect to the target
-                this.applySleepFlashEffect(target.id);
+                // Apply visual hit effect
+                applyVisualHitEffect(target.id, 'sleep');
                 
-                logBattleEvent(`${target.character.name} wurde durch Schlafpuder von ${this.attacker.character.name} eingeschläfert!`);
+                // Apply sleep flash effect
+                this.applySleepFlashEffect(target.id);
             }
         });
-        
-        // If no valid targets were found, log that
-        if (validTargets.length === 0) {
-            logBattleEvent(`Schlafpuder von ${this.attacker.character.name} hat keine Wirkung!`);
-        }
     }
     
     /**
@@ -442,6 +420,19 @@ export function addSchlafpuderStyles() {
             pointer-events: none;
         }
         
+        /* Ensure the SVG container has no background or border */
+        .attack-cone.schlafpuder-cone {
+            background: none !important;
+            border: none !important;
+        }
+        
+        /* Style for Schlafpuder cone - target only path and circle elements */
+        .attack-cone.schlafpuder-cone path,
+        .attack-cone.schlafpuder-cone circle {
+            fill: rgba(135, 206, 250, 0.3);
+            stroke: rgba(135, 206, 250, 0.6);
+        }
+        
         /* Floating animation for particles */
         @keyframes schlafpuderFloat {
             0% {
@@ -501,66 +492,65 @@ export function addSchlafpuderStyles() {
 /**
  * Check if target is valid for Schlafpuder
  * @param {Object} target - Target to check
- * @returns {boolean} - Whether target is valid
+ * @param {Object} attacker - The attacking Pokemon (optional)
+ * @param {Object} targetPosition - Position of the target (optional)
+ * @param {Object} attackerPosition - Position of the attacker (optional)
+ * @returns {Promise<boolean>} - Whether target is valid
  */
-export function isValidSchlafpuderTarget(target) {
+export async function isValidSchlafpuderTarget(target, attacker = null, targetPosition = null, attackerPosition = null) {
     // If target doesn't exist, it's not valid
     if (!target || !target.character) return false;
     
-    // Check if target already has sleep status
-    if (hasStatusEffect(target.character, 'asleep')) {
-        return false;
-    }
+    // Use the comprehensive immunity system
+    const isImmune = await hasStatusImmunity(target.character, 'asleep', {
+        attacker: attacker,
+        targetPosition: targetPosition,
+        attackerPosition: attackerPosition
+    });
     
-    // Check for Grass type immunity
-    if (target.character.pokemonTypes) {
-        const types = target.character.pokemonTypes.map(type => 
-            typeof type === 'string' ? type.toLowerCase() : ""
-        );
+    return !isImmune;
+}
+
+/**
+ * Apply Schlafpuder effects (sleep status)
+ */
+export async function applySchlafpuderEffects(attacker, validTargets, attack, results) {
+    let successfulTargets = 0;
+    
+    // Filter targets again for immunity (in case this is called independently)
+    const finalTargets = [];
+    for (const target of validTargets) {
+        const isImmune = await hasStatusImmunity(target.character, 'asleep', {
+            attacker: attacker.character,
+            targetPosition: { x: target.x, y: target.y },
+            attackerPosition: { x: attacker.x, y: attacker.y }
+        });
         
-        // Grass types are immune
-        if (types.includes('grass') || types.includes('pflanze')) {
-            return false;
+        if (!isImmune) {
+            finalTargets.push(target);
         }
     }
     
-    // Check for immunity abilities
-    const pokemon = target.character;
-    const immuneAbilities = ['insomnia', 'vital spirit', 'munterkeit'];
-    
-    // Check in abilities array
-    if (pokemon.abilities && Array.isArray(pokemon.abilities)) {
-        for (const ability of pokemon.abilities) {
-            if (ability && ability.name) {
-                const lowerName = ability.name.toLowerCase();
-                if (immuneAbilities.some(a => lowerName.includes(a))) {
-                    return false;
-                }
-            }
+    finalTargets.forEach(target => {
+        const applied = addStatusEffect(target.character, 'asleep', {
+            sourceId: attacker.character.uniqueId,
+            sourceName: attacker.character.name
+        });
+        
+        if (applied) {
+            successfulTargets++;
+            applyVisualHitEffect(target.id, 'sleep');
+            results.messages.push(`${target.character.name} wurde durch Schlafpuder von ${attacker.character.name} eingeschläfert!`);
             
-            if (ability && ability.description) {
-                const lowerDesc = ability.description.toLowerCase();
-                if (immuneAbilities.some(a => lowerDesc.includes(a))) {
-                    return false;
-                }
-            }
+            results.effects.push({
+                targetId: target.id,
+                type: 'status',
+                status: 'asleep'
+            });
         }
-    }
+    });
     
-    // Check in ability property
-    if (pokemon.ability) {
-        if (typeof pokemon.ability === 'string') {
-            const lowerName = pokemon.ability.toLowerCase();
-            if (immuneAbilities.some(a => lowerName.includes(a))) {
-                return false;
-            }
-        } else if (pokemon.ability.name) {
-            const lowerName = pokemon.ability.name.toLowerCase();
-            if (immuneAbilities.some(a => lowerName.includes(a))) {
-                return false;
-            }
-        }
+    if (successfulTargets === 0) {
+        results.messages.push(`Schlafpuder von ${attacker.character.name} hat keine Wirkung!`);
     }
-    
-    return true;
 }

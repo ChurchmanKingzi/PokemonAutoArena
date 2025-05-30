@@ -2,57 +2,135 @@
  * Attack system for Pokémon battles
  */
 
-// All imports at the beginning of the file
-import { rollAttackDice, forcedRoll, rollDamageWithValue } from './diceRoller.js';
-import { getCurrentKP } from './utils.js';
+import { handleSandAttackCounter } from './Abilities/sandgewalt.js';
+
+import { rollAttackDice, forcedRoll } from './diceRoller.js';
 import { getCharacterPositions } from './characterPositions.js';
-import { createDamageNumber, createMissMessage, createVolltrefferEffect } from './damageNumbers.js';
+import { createMissMessage } from './damageNumbers.js';
 import { animateDodge, animateMeleeAttack, animateClawSlash } from './animationManager.js';
-import { getAvailableDodgePositions, calculateDodgeValue } from './dodgeSystem.js';
-import { updateInitiativeHP } from './initiativeDisplay.js';
-import { shouldUseLuckToken, useLuckToken, handleKillLuckTokenReset } from './luckTokenSystem.js';
+import { shouldUseLuckToken, useLuckToken } from './luckTokenSystem.js';
 import { calculateMinDistanceBetweenPokemon } from './pokemonDistanceCalculator.js';
 import { calculateSizeCategory } from './pokemonSizeCalculator.js';
 import { addStatusEffect } from './statusEffects.js';
 import { logBattleEvent } from './battleLog.js';
+import { getCurrentWeather, WEATHER_TYPES, getWeatherEvasionThreshold } from './weather.js';
+import { applyDamageAndEffects, calculateFinalDamage } from './damage.js';
+import { doesPokemonOccupyTile } from './pokemonDistanceCalculator.js';
+import { areAttacksInProgress, waitForAttacksToComplete } from './turnSystem.js';
+import { isCharacterInAnimation } from './turnSystem.js';
+import { calculateAttackDamage } from './damage.js';
+
 import { isValidGiftpuderTarget } from './Attacken/giftpuder.js';
 import { isValidSchlafpuderTarget } from './Attacken/schlafpuder.js';
 import { isValidStachelsporeTarget } from './Attacken/stachelspore.js';
 import { isValidSandwirbelTarget } from './Attacken/sandwirbel.js';
-import { wakeUpFromDamage } from './statusEffects.js';
-import { getCurrentStatValue } from './statChanges.js';
-import { removeDefeatedCharacter } from './characterPositions.js';
-import { updatePokemonHPBar } from './pokemonOverlay.js';
-import { 
-    fireProjectile, 
-    isLineOfSightBlockedByAlly, 
-    startProjectileSystem,
-    clearAllProjectiles 
-} from './projectileSystem.js';
-import { getTerrainAt, isLineOfSightBlockedByMountain } from './terrainEffects.js';
+import { isValidFadenschussTarget } from './Attacken/fadenschuss.js';
+import { shouldSelectExplosion, shouldAbortExplosion } from './Attacken/explosion.js';
+import { handleRankenhiebAttack } from './Attacken/rankenhieb.js';
+import { handleWalzerAttack } from './Attacken/walzer.js';
+import { handleKreuzschereAttack } from './Attacken/kreuzschere.js';
+import { isWalzerViable } from './Attacken/walzer.js';
+import { handleToxinAttack, isValidToxinTarget } from './Attacken/toxin.js';
+import { applyBlitzkanoneGENAPenalty } from './Attacken/blitzkanone.js';
+import { animateBohrschnabelWithEffects } from './Attacken/bohrschnabel.js';
+import { handleFlammenwurfAttack } from './Attacken/flammenwurf.js';
+import { handleBlubbstrahlAttack } from './Attacken/blubbstrahl.js';
+import { handleDonnerAttack, getDonnerPriorityModifier } from './Attacken/donner.js';
 
-// Import the effectiveness module directly
-import { 
-    getTypeEffectiveness,
-    getTypeEffectivenessDescription,
-    getAttackerAttack,
-    getTargetDefense
-} from './effectivenessLookupTable.js';
+import { getCurrentStatValue } from './statChanges.js';
+import { isConeAttack } from './coneHits.js';
+import { fireProjectile, isLineOfSightBlockedByAlly, startProjectileSystem, clearAllProjectiles } from './projectileSystem.js';
+import { getTerrainAt, isLineOfSightBlockedByMountain } from './terrainEffects.js';
+import { getTypeEffectiveness, getAttackerAttack, getTargetDefense } from './effectivenessLookupTable.js';
+import { areExplosionsInProgress } from './turnSystem.js';
 
 // Track current attacks for synchronization
 let activeAttackPromises = [];
+
+// Track active attack callbacks to prevent duplicates
+const activeAttackCallbacks = new Set();
+
+/**
+ * Get the effective range of an attack for selection purposes
+ * Cone attacks get -1 range penalty during selection
+ * @param {Object} attack - The attack object
+ * @returns {number} - Effective range for selection
+ */
+function getEffectiveRangeForSelection(attack) {
+    const baseRange = attack.range || 1;
+    
+    // Check if this is a cone attack
+    if (isConeAttack(attack)) {
+        return Math.max(1, baseRange - 1); // Minimum range of 1, subtract 1 for cone attacks
+    }
+    
+    return baseRange;
+}
 
 /**
  * Reset all active attacks and ensure everything is complete before continuing
  * @returns {Promise} - Promise that resolves when all attacks are complete
  */
-export function completeAllActiveAttacks() {
-    return Promise.all(activeAttackPromises).then(() => {
-        // Clear the array when all promises resolve
-        activeAttackPromises = [];
-        // Clear any active projectiles as a safety measure
-        clearAllProjectiles();
-    });
+export async function completeAllActiveAttacks() {
+    // Wait for all active attack promises to resolve
+    await Promise.all(activeAttackPromises);
+    
+    // Clear the array when all promises resolve
+    activeAttackPromises = [];
+    
+    // IMPORTANT: Also wait for any ongoing explosions
+    if (areExplosionsInProgress()) {
+        console.log("Waiting for explosions to complete in completeAllActiveAttacks...");
+        
+        let waitCount = 0;
+        while (areExplosionsInProgress() && waitCount < 50) { // Max 5 second wait
+            await new Promise(resolve => setTimeout(resolve, 100));
+            waitCount++;
+        }
+        
+        if (waitCount >= 50) {
+            console.warn('Timeout waiting for explosions in completeAllActiveAttacks');
+        }
+    }
+
+    // Clear any active projectiles as a safety measure
+    clearAllProjectiles();
+    
+    // ADDITIONAL CLEANUP: Remove any lingering attack visual effects
+    const battlefield = document.querySelector('.battlefield-grid');
+    if (battlefield) {
+        // Remove cone indicators
+        const cones = battlefield.querySelectorAll('.attack-cone');
+        cones.forEach(cone => {
+            if (cone.parentNode) {
+                cone.parentNode.removeChild(cone);
+            }
+        });
+        
+        // Remove particle containers
+        const particles = battlefield.querySelectorAll('.eissturm-particles-container');
+        particles.forEach(container => {
+            if (container.parentNode) {
+                container.parentNode.removeChild(container);
+            }
+        });
+        
+        // Remove tile highlights
+        const highlights = battlefield.querySelectorAll('.tile-highlights-container');
+        highlights.forEach(container => {
+            if (container.parentNode) {
+                container.parentNode.removeChild(container);
+            }
+        });
+    }
+    
+    // Clear any active cones from the cone system
+    try {
+        const attackConeModule = await import('./attackCone.js');
+        attackConeModule.removeConeIndicator(); // Remove all cones
+    } catch (err) {
+        console.warn('Could not clear cones:', err);
+    }
 }
 
 /**
@@ -121,11 +199,11 @@ export async function findNearestEnemyInRange(charData) {
     const rangedAttacks = validAttacks.filter(attack => attack.type === 'ranged');
     const meleeAttacks = validAttacks.filter(attack => attack.type === 'melee');
     
-    // Get the maximum range for each attack type
+    // Get the maximum range for each attack type (using effective range for cone attacks)
     const maxRangedRange = rangedAttacks.length > 0 ? 
-        Math.max(...rangedAttacks.map(attack => attack.range)) : 0;
+        Math.max(...rangedAttacks.map(attack => getEffectiveRangeForSelection(attack))) : 0;
     const maxMeleeRange = meleeAttacks.length > 0 ? 
-        Math.max(...meleeAttacks.map(attack => attack.range)) : 0;
+        Math.max(...meleeAttacks.map(attack => getEffectiveRangeForSelection(attack))) : 0;
     
     // Check if attacker is on a mountain (for line of sight advantage)
     const isAttackerOnMountain = getTerrainAt(charData.x, charData.y) === 'mountain';
@@ -145,7 +223,8 @@ export async function findNearestEnemyInRange(charData) {
         
         // For each valid attack, check if this target is in range
         for (const attack of validAttacks) {
-            if (distance > attack.range) continue;
+            const effectiveRange = getEffectiveRangeForSelection(attack);
+            if (distance > effectiveRange) continue;
             
             // For ranged attacks, check line of sight
             if (attack.type === 'ranged') {
@@ -169,12 +248,12 @@ export async function findNearestEnemyInRange(charData) {
             // If we have ranged attacks, prioritize targets at the optimal range
             if (rangedAttacks.length > 0 && attack.type === 'ranged') {
                 // Calculate how close to the ideal range this target is (exact match = 0)
-                const rangeDifference = Math.abs(distance - attack.range);
+                const rangeDifference = Math.abs(distance - effectiveRange);
                 
                 // Targets at exact range get highest priority
                 if (rangeDifference === 0) {
                     targetPriority = 2000; // Very high priority
-                } else if (distance === attack.range - 1) {
+                } else if (distance === effectiveRange - 1) {
                     targetPriority = 1900; // Almost perfect
                 } else {
                     // The closer to the ideal range, the higher the priority
@@ -209,12 +288,13 @@ export async function findNearestEnemyInRange(charData) {
 
 /**
  * Get the best attack for a target based on effectiveness and damage potential
+ * Now includes special Explosion selection logic and Walzer viability checking
  * @param {Object} attacker - Attacker character data
  * @param {Object} target - Target character data
  * @param {number} distance - Precalculated minimum distance
  * @returns {Object|null} - Best attack or null if no valid attack
  */
-export async function getBestAttack(attacker, target, distance = null) {
+export async function getBestAttack(attacker, target, distance = null, reaction = false) {
     // If distance wasn't provided, calculate it
     if (distance === null) {
         distance = calculateMinDistanceBetweenPokemon(attacker, target);
@@ -224,19 +304,68 @@ export async function getBestAttack(attacker, target, distance = null) {
     if (!attacker.character.attacks || attacker.character.attacks.length === 0) {
         return null;
     }
+
+    // SPECIAL EXPLOSION LOGIC - Check if Explosion should be randomly selected
+    // Only apply explosion logic if we're not looking for reaction attacks
+    if (!reaction && shouldSelectExplosion(attacker.character)) {
+        // Find the Explosion attack
+        const explosionAttack = attacker.character.attacks.find(attack => 
+            attack.weaponName === "Explosion" && 
+            (attack.currentPP === undefined || attack.currentPP > 0)
+        );
+        
+        if (explosionAttack) {            
+            // Check ally/enemy ratio in explosion range
+            if (shouldAbortExplosion(attacker, explosionAttack.range || 6)) {
+                // Continue with normal attack selection, but exclude Explosion
+            } else {
+                // Use Explosion!
+                logBattleEvent(`${attacker.character.name} entscheidet sich für eine verheerende Explosion!`);
+                // Set attack properties to ensure it works properly
+                explosionAttack.type = 'ranged';
+                explosionAttack.range = explosionAttack.range || 6;
+                explosionAttack.cone = 360; // Full circle
+                return explosionAttack;
+            }
+        }
+    }
     
     // Get target's types for effectiveness calculation
     const targetTypes = target.character.pokemonTypes || [];
     
     // Find all valid attacks (have PP and are in range)
+    // Exclude Explosion from normal selection
     let verzweiflerAttack = null;
     let validAttacks = [];
     
     for (let i = 0; i < attacker.character.attacks.length; i++) {
         const attack = attacker.character.attacks[i];
 
+        // NEVER select Explosion in normal attack selection
+        if (attack.weaponName === "Explosion") {
+            continue;
+        }
+
+        // Apply reaction filtering
+        if (reaction) {
+            // If looking for reaction attacks, skip attacks without reaction property
+            if (!attack.reaction) {
+                continue;
+            }
+        } else {
+            // If not looking for reaction attacks, skip attacks with reaction property
+            if (attack.reaction) {
+                continue;
+            }
+        }
+
         if (attack.weaponName === "Verzweifler") {
             verzweiflerAttack = attack;
+        }
+
+        // NEVER select notOffensive moves (weather moves, etc.) in normal attack selection
+        if (attack.notOffensive === true) {
+            continue;
         }
         
         // Skip attacks with no PP (except Verzweifler which doesn't use PP)
@@ -247,28 +376,36 @@ export async function getBestAttack(attacker, target, distance = null) {
             continue;
         }
         
-        // Skip attacks out of range
-        if (attack.range < distance) {
-            continue;
+        if (attack.weaponName === "Walzer") {
+            if (!isWalzerViable(attacker, target)) {
+                continue; // Skip Walzer if it's not viable
+            }
+        }
+        
+        // Skip Toxin if target is already poisoned or immune
+        if (attack.weaponName && attack.weaponName.toLowerCase() === 'toxin') {
+            if (!await isValidToxinTarget(target)) {
+                continue;
+            }
         }
         
         // Skip Giftpuder if target is already poisoned or immune
         if (attack.weaponName && attack.weaponName.toLowerCase() === 'giftpuder') {
-            if (!isValidGiftpuderTarget(target)) {
+            if (!await isValidGiftpuderTarget(target)) {
                 continue;
             }
         }
         
         // Skip Schlafpuder if target is already asleep or immune
         if (attack.weaponName && attack.weaponName.toLowerCase() === 'schlafpuder') {
-            if (!isValidSchlafpuderTarget(target)) {
+            if (!await isValidSchlafpuderTarget(target)) {
                 continue;
             }
         }
 
         // Skip Stachelspore if target is already paralyzed or immune
         if (attack.weaponName && attack.weaponName.toLowerCase() === 'stachelspore') {
-            if (!isValidStachelsporeTarget(target)) {
+            if (!await isValidStachelsporeTarget(target)) {
                 continue;
             }
         }
@@ -279,13 +416,49 @@ export async function getBestAttack(attacker, target, distance = null) {
                 continue;
             }
         }
+
+        // Skip Fadenschuss if target's initiative is already at -6
+        if (attack.weaponName && attack.weaponName.toLowerCase() === 'fadenschuss') {
+            if (!isValidFadenschussTarget(target)) {
+                continue;
+            }
+        }
+
+        // Skip strahl attacks if line doesn't contain more enemies than allies
+        if (attack.strahl === true) {
+            const lineCounts = countCharactersOnStrahlLine(attacker, target);
+            if (lineCounts.enemies <= lineCounts.allies) {
+                continue; // Skip this strahl attack - not enough enemies on the line
+            }
+        }
         
+        // Check for immunity if attack has base damage > 0
+        if (attack.damage && attack.damage > 0) {
+            try {
+                // Calculate projected damage to check for immunity
+                const damageResult = calculateAttackDamage(attacker, target, attack, {
+                    isCritical: false // Don't assume critical for immunity check
+                });
+                console.log("Prognostizierter Schaden: " + damageResult.finalDamage);
+                console.log("Effektivität: " + damageResult.effectivenessDesc);
+                // If projected damage is 0, target is immune - skip this attack
+                if (damageResult.finalDamage === 0) {
+                    continue;
+                }
+            } catch (error) {
+                console.error(`Error calculating damage for ${attack.weaponName}:`, error);
+                // If calculation fails, continue with the attack to avoid breaking selection
+            }
+        }
+
         // Add to valid attacks
         validAttacks.push(attack);
     }
     
-    //Only valid option is Verzweifler:
-    if (validAttacks.length === 0 && verzweiflerAttack) {
+    // Only use Verzweifler as fallback if NOT looking for reaction attacks
+    if (validAttacks.length === 0 && verzweiflerAttack && !reaction) {
+        verzweiflerAttack.range = 1;
+        verzweiflerAttack.type = 'melee'; // Also ensure it's marked as melee
         verzweiflerAttack.isLastResort = true;
         return verzweiflerAttack;
     }
@@ -295,8 +468,8 @@ export async function getBestAttack(attacker, target, distance = null) {
         return null;
     }
     
-    // If Verzweifler is the only option, use it
-    if (validAttacks.length === 1 && validAttacks[0].weaponName === "Verzweifler") {
+    // If Verzweifler is the only option, use it (but not if looking for reaction attacks)
+    if (validAttacks.length === 1 && validAttacks[0].weaponName === "Verzweifler" && !reaction) {
         return validAttacks[0];
     }
     
@@ -304,8 +477,17 @@ export async function getBestAttack(attacker, target, distance = null) {
     const nonVerzweiflerAttacks = validAttacks.filter(attack => attack.weaponName !== "Verzweifler");
     
     // If there are non-Verzweifler attacks, filter out Verzweifler
-    if (nonVerzweiflerAttacks.length > 0) {
+    // OR if we're looking for reaction attacks, always filter out Verzweifler
+    if (nonVerzweiflerAttacks.length > 0 || reaction) {
         validAttacks = nonVerzweiflerAttacks;
+    }
+
+    // Check if the Pokémon has "aiming" or "zielend" strategy
+    if (attacker.character.strategy === 'aiming' || attacker.character.strategy === 'zielend') {
+        // Sort by range (highest first) instead of calculating damage
+        validAttacks.sort((a, b) => (b.range || 1) - (a.range || 1));
+        // Return the attack with the highest range
+        return validAttacks[0];
     }
     
     // Calculate potential damage for each attack
@@ -360,88 +542,6 @@ export async function getBestAttack(attacker, target, distance = null) {
 }
 
 /**
- * Calculate damage based on attack type, stats and type effectiveness
- * @param {Object} selectedAttack - The selected attack
- * @param {Object} target - Target character data
- * @param {Object} attacker - Attacker character data
- * @returns {Object} - Damage roll results with modified dice count
- */
-export function calculateDamage(selectedAttack, target, attacker) {
-        // Base damage from the attack
-    let baseDamage = selectedAttack.damage;
-    let originalBaseDamage = baseDamage; // Store original for debugging
-    
-    if (originalBaseDamage === 0) {
-        return {
-            rolls: [0],
-            total: 0,
-            modifiedDiceCount: 0,
-            originalDiceCount: 0
-        };
-    }
-
-    // Get attack category (Physical/Special)
-    const category = selectedAttack.category || 'Physisch'; // Default to Physical if not set
-    
-    // Get target's types - ensure proper formatting
-    const targetTypes = target.character.pokemonTypes || [];
-    
-    // Determine which stats to use based on category
-    let attackStatName, defenseStatName;
-    if (category.toLowerCase() === 'physisch' || category.toLowerCase() === 'physical') {
-        attackStatName = 'angriff';
-        defenseStatName = 'verteidigung';
-    } else {
-        attackStatName = 'spezialAngriff';
-        defenseStatName = 'spezialVerteidigung';
-    }
-    
-    // Get current attack and defense values
-    const attackStat = getCurrentStatValue(attacker.character, attackStatName);
-    const defenseStat = getCurrentStatValue(target.character, defenseStatName);
-    
-    // Calculate stat modifier
-    if (attackStat && defenseStat) {
-        const statDifference = attackStat - defenseStat;
-        const statModifier = Math.floor(statDifference / 5);
-        
-        // Apply modifier (minimum 50% of base damage)
-        baseDamage = Math.max(Math.ceil(baseDamage / 2), baseDamage + statModifier);
-    }
-    
-    // Apply type effectiveness - Make sure the moveType exists before checking
-    if (selectedAttack.moveType && targetTypes && targetTypes.length > 0) {
-        // Ensure proper formatting for effectiveness lookup
-        const attackType = selectedAttack.moveType.toLowerCase();
-        const normalizedTargetTypes = targetTypes.map(t => typeof t === 'string' ? t.toLowerCase() : t);
-        
-        // Get effectiveness value from lookup table
-        const effectiveness = getTypeEffectiveness(attackType, normalizedTargetTypes);
-        
-        // Apply effectiveness multiplier ONLY if it's not undefined or null
-        if (effectiveness !== undefined && effectiveness !== null) {
-            // Apply the multiplier
-            const originalDamage = baseDamage;
-            baseDamage = Math.round(baseDamage * effectiveness);
-            
-            // Add effectiveness description to the attack's effect property
-            const effectivenessDesc = getTypeEffectivenessDescription(attackType, normalizedTargetTypes);
-            selectedAttack.effectivenessDesc = effectivenessDesc;
-        }
-    }
-    
-    // Roll the dice for the modified damage
-    const damageRoll = rollDamageWithValue(baseDamage);
-    
-    // Return result with the actual dice count used
-    return {
-        ...damageRoll,
-        modifiedDiceCount: baseDamage, // Return the actual number of dice used
-        originalDiceCount: originalBaseDamage // For debugging
-    };
-}
-
-/**
  * Get modified GENA value based on weapon type and character skills
  * @param {Object} attacker - Attacker character data
  * @param {Object} attack - The selected attack
@@ -486,109 +586,415 @@ export function getModifiedGena(attacker, attack) {
 }
 
 /**
- * Attempt to dodge an attack based on the enhanced dodge rules
- * @param {Object} attacker - The attacking character
- * @param {Object} target - The target character
- * @param {Object} attackRoll - The attacker's roll result
- * @param {Object} selectedAttack - The attack being used
- * @returns {Promise<Object>} - Result of dodge attempt {success, position, roll}
+ * Initialize attack result and handle PP reduction
+ * @param {Object} attacker - Attacker character data
+ * @param {Object} target - Target character data
+ * @param {Object} selectedAttack - The selected attack
+ * @returns {Object} - Initial attack result
  */
-export async function attemptEnhancedDodge(attacker, target, attackRoll, selectedAttack) {    
-    // Calculate the target's dodge value (PA + Ausweichen)
-    const dodgeValue = calculateDodgeValue(target.character);
-    
-    // Roll for defense
-    const defenseRoll = rollAttackDice(dodgeValue);
-    
-    // Check if defense succeeds (needs to get more successes than attacker)
-    const dodgeSuccessful = defenseRoll.netSuccesses > attackRoll.netSuccesses;
-    
-    // If dodge failed by the roll, return early
-    if (!dodgeSuccessful) {
-        return {
-            success: false,
-            roll: defenseRoll,
-            message: `${target.character.name} failed to dodge (insufficient successes).`
-        };
-    }
-    
-    // Get available dodge positions
-    const isRanged = selectedAttack.type === 'ranged';
-    const dodgePositions = getAvailableDodgePositions(target, attacker, isRanged);
-    
-    // If no positions available, dodge fails despite successful roll
-    if (!dodgePositions || dodgePositions.length === 0) {
-        return {
-            success: false,
-            roll: defenseRoll,
-            message: `${target.character.name} rolled enough successes but has no valid position to dodge to.`
-        };
-    }
-    let validDodgePositions = [...dodgePositions];
-    
-    // Choose a random dodge position from valid ones
-    const dodgePos = validDodgePositions[Math.floor(Math.random() * validDodgePositions.length)];
-    
-    // Find the target character ID
-    const characterPositions = getCharacterPositions();
-    const targetId = Object.keys(characterPositions).find(id => 
-        characterPositions[id].character === target.character);
-    
-    if (!targetId) {
-        return {
-            success: false,
-            roll: defenseRoll,
-            message: `Error: Target character ID not found`
-        };
-    }
-    
-    // Return successful dodge result
-    return {
-        success: true,
-        position: dodgePos,
-        targetId: targetId,
-        roll: defenseRoll,
-        message: `${target.character.name} dodges successfully!`
+export function initializeAttackResult(attacker, target, selectedAttack) {
+    const attackResult = {
+        attacker: attacker.character.name,
+        target: target.character.name,
+        success: false,
+        attackRolls: [],
+        defenseRolls: [],
+        damage: 0,
+        forcedRolls: 0,
+        log: []
     };
+    
+    // Handle PP reduction
+    if (selectedAttack.weaponName !== "Verzweifler" && selectedAttack.pp !== undefined) {
+        if (selectedAttack.currentPP === undefined) {
+            selectedAttack.currentPP = selectedAttack.pp;
+        }
+        selectedAttack.currentPP = Math.max(0, selectedAttack.currentPP - 1);
+        attackResult.log.push(`${attacker.character.name} benutzt ${selectedAttack.weaponName} (${selectedAttack.currentPP}/${selectedAttack.pp} AP übrig).`);
+    } else {
+        attackResult.log.push(`${attacker.character.name} benutzt ${selectedAttack.weaponName}.`);
+    }
+    
+    return attackResult;
 }
 
 /**
- * Execute dodge animation and update character position
- * @param {Object} dodgeResult - Result from attemptEnhancedDodge
- * @returns {Promise<boolean>} - Whether dodge was completed
+ * Handle cone attack execution
+ * @param {Object} attacker - Attacker character data
+ * @param {Object} target - Target character data
+ * @param {Object} selectedAttack - The selected attack
+ * @param {string} charId - Attacker character ID
+ * @returns {Promise<Object>} - Attack result
  */
-export function executeDodge(dodgeResult) {
-    return new Promise(resolve => {
-        if (!dodgeResult.success) {
-            resolve(false);
-            return;
+async function handleConeAttack(attacker, target, selectedAttack, charId) {
+    const attackResult = initializeAttackResult(attacker, target, selectedAttack);
+    attackResult.success = true; // Cone attacks always "succeed" in firing
+    
+    const genaValue = getModifiedGena(attacker, selectedAttack);
+    let attackRoll = rollAttackDice(genaValue);
+    attackResult.attackRolls.push(attackRoll);
+    
+    attackResult.log.push(`${attacker.character.name} greift mit ${selectedAttack.weaponName} an und würfelt: [${attackRoll.rolls.join(', ')}] - ${attackRoll.successes} Erfolge, ${attackRoll.failures} Fehlschläge = ${attackRoll.netSuccesses} Netto.`);
+    
+    // Handle luck tokens and forcing
+    attackRoll = await handleLuckTokensAndForcing(attacker, attackRoll, genaValue, charId, attackResult);
+    
+    // Apply weather evasion threshold for cone attacks
+    const hitThreshold = getWeatherEvasionThreshold(target);
+    const coneHits = attackRoll.netSuccesses >= hitThreshold;
+    
+    if (coneHits) {
+        attackResult.log.push(`${attacker.character.name}s ${selectedAttack.weaponName} trifft!`);
+        if (hitThreshold > 1) {
+            attackResult.log.push(`${target.character.name}s Wetterreaktion konnte den Kegel-Angriff nicht vollständig vermeiden!`);
         }
-        
-        // Animate the dodge
-        animateDodge(dodgeResult.targetId, dodgeResult.position, () => {
-            resolve(true);
+    } else {
+        attackResult.log.push(`${attacker.character.name}s ${selectedAttack.weaponName} verfehlt das Ziel!`);
+        if (hitThreshold > 1) {
+            attackResult.log.push(`${target.character.name}s Wetterreaktion half beim Ausweichen vor dem Kegel-Angriff!`);
+        }
+    }
+    
+    // Fire the cone attack
+    const conePromise = new Promise((resolveCone) => {
+        fireProjectile(attacker, target, selectedAttack, coneHits, () => {
+            resolveCone();
         });
     });
+    
+    startProjectileSystem();
+    await conePromise;
+    
+    return attackResult;
 }
 
 /**
- * Perform an attack from one character to another with luck token integration
+ * Handle luck tokens and forcing rolls
+ * @param {Object} attacker - Attacker character data
+ * @param {Object} attackRoll - Initial attack roll
+ * @param {number} genaValue - Modified GENA value
+ * @param {string} charId - Attacker character ID
+ * @param {Object} attackResult - Attack result to log to
+ * @returns {Object} - Final attack roll after tokens/forcing
+ */
+export async function handleLuckTokensAndForcing(attacker, attackRoll, genaValue, charId, attackResult) {
+    // Check luck token usage
+    if (attackRoll.netSuccesses <= 0 && shouldUseLuckToken(attacker.character, attackRoll)) {
+        const luckTokenResult = useLuckToken(attacker.character, attackRoll, genaValue, charId);
+        if (luckTokenResult.success) {
+            attackResult.log.push(luckTokenResult.message);
+            attackRoll = luckTokenResult.roll;
+            attackResult.attackRolls.push(attackRoll);
+        }
+    }
+    
+    // Handle forcing rolls
+    let forcedCount = 0;
+    const forcingMode = attacker.character.forcingMode || 'always';
+    let usedLuckToken = false;
+
+    while (attackRoll.netSuccesses === 0) {
+        forcedCount++;
+        attackResult.forcedRolls++;
+        
+        attackResult.log.push(`${attacker.character.name} erhält genau 0 Erfolge und forciert!`);
+        
+        attackRoll = forcedRoll(genaValue, forcedCount, forcingMode);
+        attackResult.attackRolls.push(attackRoll);
+        
+        attackResult.log.push(`Forcieren-Wurf (${forcedCount}): [${attackRoll.rolls.join(', ')}] mit Erschwernis von ${forcedCount} = ${attackRoll.netSuccesses} Netto.`);
+        
+        if (attackRoll.netSuccesses < 0 && !usedLuckToken && shouldUseLuckToken(attacker.character, attackRoll)) {
+            const luckTokenResult = useLuckToken(attacker.character, attackRoll, genaValue);
+            if (luckTokenResult.success) {
+                usedLuckToken = true;
+                attackResult.log.push(luckTokenResult.message);
+                attackRoll = luckTokenResult.roll;
+                attackResult.attackRolls.push(attackRoll);
+            }
+        }
+        
+        if (forcingMode === 'once' && forcedCount >= 1) break;
+        if (forcingMode === 'dynamic' && forcedCount >= Math.floor(genaValue / 4) + 1) break;
+        if (forcingMode === 'never') break;
+    }
+    
+    return attackRoll;
+}
+
+/**
+ * Handle attack miss animations
+ * @param {Object} attacker - Attacker character data
+ * @param {Object} target - Target character data
+ * @param {Object} selectedAttack - The selected attack
+ * @param {string} charId - Attacker character ID
+ * @returns {Promise<void>} - Resolves when miss animation completes
+ */
+async function handleAttackMiss(attacker, target, selectedAttack, charId) {
+    if (selectedAttack.type === 'ranged') {
+        const projectilePromise = new Promise((resolveProjectile) => {
+            fireProjectile(attacker, target, selectedAttack, false, () => {
+                resolveProjectile();
+            });
+        });
+        startProjectileSystem();
+        await projectilePromise;
+    } else {
+        createMissMessage(attacker);
+        const attackerSize = calculateSizeCategory(attacker.character);
+        const targetSize = calculateSizeCategory(target.character);
+        
+        const attackAnimPromise = new Promise((resolveAnim) => {
+            animateMeleeAttack(charId, attacker, target, attackerSize, targetSize, () => {
+                resolveAnim();
+            });
+        });
+        await attackAnimPromise;
+    }
+}
+
+/**
+ * Apply on-hit status effects
+ * @param {Object} attacker - Attacker character data
+ * @param {Object} target - Target character data
+ * @param {Object} selectedAttack - The selected attack
+ * @param {Object} attackResult - Attack result to update
+ * @param {Object} attackRoll - Attack roll result
+ * @param {boolean} shouldDealDamage - Whether damage was dealt
+ */
+export function applyOnHitStatusEffects(attacker, target, selectedAttack, attackResult, attackRoll, shouldDealDamage) {
+    if (!attackResult.success || attackRoll.netSuccesses < 0) return;
+    
+    if (selectedAttack.weaponName === "Glut") {
+        const isImmuneType = target.character.pokemonTypes && 
+                          target.character.pokemonTypes.some(type => 
+                              type.toLowerCase() === 'fire' || type.toLowerCase() === 'feuer');
+        
+        if (!isImmuneType) {
+            const statusApplied = applyStatusEffectFromAttack(target.character, 'burned', attacker.character);
+            if (statusApplied) {
+                attackResult.log.push(`${attacker.character.name}s Glut verursacht eine Verbrennung bei ${target.character.name}!`);
+            }
+        } else {
+            attackResult.log.push(`${target.character.name} ist als Feuer-Pokémon immun gegen Verbrennungen!`);
+        }
+    }
+    
+    if (selectedAttack.weaponName === "Donnerschock") {
+        const isImmuneType = target.character.pokemonTypes && 
+                          target.character.pokemonTypes.some(type => 
+                              type.toLowerCase() === 'ground' || type.toLowerCase() === 'boden' || 
+                              type.toLowerCase() === 'electric' || type.toLowerCase() === 'elektro');
+        
+        if (!isImmuneType) {
+            const statusApplied = applyStatusEffectFromAttack(target.character, 'paralyzed', attacker.character);
+            if (statusApplied) {
+                const message = shouldDealDamage ? 
+                    `${attacker.character.name}s Donnerschock paralysiert ${target.character.name}!` :
+                    `${attacker.character.name}s Donnerschock paralysiert ${target.character.name} trotz fehlendem Schaden!`;
+                attackResult.log.push(message);
+            }
+        } else {
+            attackResult.log.push(`${target.character.name} ist gegen Paralyse immun!`);
+        }
+    }
+}
+
+/**
+ * Execute ranged attack with dodge handling
+ * @param {Object} attacker - Attacker character data
+ * @param {Object} target - Target character data
+ * @param {Object} selectedAttack - The selected attack
+ * @param {Object} attackRoll - Attack roll result
+ * @param {Object} attackResult - Attack result to update
+ * @param {Object} dodgeResult - Dodge attempt result
+ * @param {string} targetId - Target character ID
+ * @param {string} charId - Attacker character ID
+ * @returns {Promise<void>} - Resolves when attack completes
+ */
+async function executeRangedAttack(attacker, target, selectedAttack, attackRoll, attackResult, dodgeResult, targetId, charId) {
+    // Handle dodge failure bonus (only if no reaction was triggered)
+    if (!dodgeResult.success && !dodgeResult.reactionTriggered && dodgeResult.roll && dodgeResult.roll.netSuccesses < 0) {
+        const dodgeFailureBonus = Math.abs(dodgeResult.roll.netSuccesses);
+        attackRoll.netSuccesses += dodgeFailureBonus;
+        attackResult.log.push(`${target.character.name} verschlechtert seine Position durch den Ausweichversuch! ${attacker.character.name} erhält +${dodgeFailureBonus} Erfolge.`);
+    }
+    
+    // Handle successful dodge for non-cone attacks (only if no reaction was triggered)
+    if (dodgeResult.success && !dodgeResult.reactionTriggered && selectedAttack.cone === undefined) {
+        const { chooseDodgePosition } = await import('./dodgeSystem.js');
+        const dodgePos = chooseDodgePosition(target, attacker, true);
+        
+        if (dodgePos) {
+            const projectilePromise = new Promise((resolveProjectile) => {
+                fireProjectile(attacker, target, selectedAttack, false, () => {
+                    resolveProjectile();
+                });
+            });
+            
+            startProjectileSystem();
+            
+            const { animateDodge } = await import('./animationManager.js');
+            animateDodge(targetId, dodgePos, () => {});
+            
+            await projectilePromise;
+            return;
+        } else {
+            attackResult.log.push(`${target.character.name} versucht auszuweichen, hat aber keinen Platz!`);
+        }
+    }
+    
+    // Log reaction status
+    if (dodgeResult.reactionTriggered) {
+        attackResult.log.push(`${target.character.name} führt eine Reaktionsattacke aus und kann nicht ausweichen!`);
+    } else if (!dodgeResult.success) {
+        attackResult.log.push(`${target.character.name} konnte nicht ausweichen!`);
+    }
+    
+    // Attack hits target (either failed dodge or reaction triggered)
+    attackResult.success = true;
+    
+    const damageData = calculateFinalDamage(selectedAttack, target, attacker, attackRoll);
+    
+    const projectilePromise = new Promise((resolveProjectile) => {
+        fireProjectile(attacker, target, selectedAttack, true, (hitSuccess) => {
+            applyDamageAndEffects(target, attacker, selectedAttack, damageData, attackResult, targetId, charId, attackRoll);
+            resolveProjectile();
+        }, damageData.shouldDealDamage ? damageData.finalDamage : 0);
+    });
+    
+    startProjectileSystem();
+    await projectilePromise;
+}
+
+/**
+ * Execute melee attack with dodge handling
+ * @param {Object} attacker - Attacker character data
+ * @param {Object} target - Target character data
+ * @param {Object} selectedAttack - The selected attack
+ * @param {Object} attackRoll - Attack roll result
+ * @param {Object} attackResult - Attack result to update
+ * @param {Object} dodgeResult - Dodge attempt result
+ * @param {string} targetId - Target character ID
+ * @param {string} charId - Attacker character ID
+ * @returns {Promise<void>} - Resolves when attack completes
+ */
+async function executeMeleeAttack(attacker, target, selectedAttack, attackRoll, attackResult, dodgeResult, targetId, charId) {
+    // Handle dodge failure bonus (only if no reaction was triggered)
+    if (!dodgeResult.success && !dodgeResult.reactionTriggered && dodgeResult.roll && dodgeResult.roll.netSuccesses < 0) {
+        const dodgeFailureBonus = Math.abs(dodgeResult.roll.netSuccesses);
+        attackRoll.netSuccesses += dodgeFailureBonus;
+        attackResult.log.push(`${target.character.name} verschlechtert seine Position durch den Ausweichversuch! ${attacker.character.name} erhält +${dodgeFailureBonus} Erfolge.`);
+    }
+    
+    const attackerSize = calculateSizeCategory(attacker.character);
+    const targetSize = calculateSizeCategory(target.character);
+    
+    // Handle successful dodge (only if no reaction was triggered)
+    if (dodgeResult.success && !dodgeResult.reactionTriggered) {
+        const { chooseDodgePosition } = await import('./dodgeSystem.js');
+        const dodgePos = chooseDodgePosition(target, attacker, false);
+        
+        if (dodgePos) {
+            attackResult.log.push(`${target.character.name} weicht dem Nahkampfangriff aus!`);
+            
+            const dodgePromise = new Promise((resolveDodge) => {
+                setTimeout(() => {
+                    animateDodge(targetId, dodgePos, () => {
+                        resolveDodge();
+                    });
+                }, 200);
+            });
+            
+            const attackPromise = new Promise((resolveAttack) => {
+                animateMeleeAttack(charId, attacker, target, attackerSize, targetSize, () => {
+                    resolveAttack();
+                });
+            });
+            
+            await Promise.all([attackPromise, dodgePromise]);
+            return;
+        } else {
+            attackResult.log.push(`${target.character.name} versucht auszuweichen, hat aber keinen Platz!`);
+        }
+    }
+    
+    // Log reaction status
+    if (dodgeResult.reactionTriggered) {
+        attackResult.log.push(`${target.character.name} führt eine Reaktionsattacke aus und kann nicht ausweichen!`);
+    } else if (!dodgeResult.success) {
+        attackResult.log.push(`${target.character.name} konnte nicht ausweichen!`);
+    }
+    
+    // Attack hits target (either failed dodge or reaction triggered)
+    attackResult.success = true;
+    
+    const attackAnimPromise = new Promise((resolveAnim) => {
+        // Handle Schlitzer special animation
+        if (selectedAttack.weaponName === "Schlitzer" && attackResult.success) {
+            animateClawSlash(target, () => {});
+            attackResult.log.push(`${attacker.character.name}s Schlitzer-Angriff hinterlässt tiefe Kratzspuren!`);
+        }
+
+        // Handle Bohrschnabel special animation  
+        if (selectedAttack.weaponName === "Bohrschnabel" && attackResult.success) {
+            animateBohrschnabelWithEffects(attacker, target, () => {
+                // IMPORTANT: Calculate and apply damage in the callback
+                const damageData = calculateFinalDamage(selectedAttack, target, attacker, attackRoll);
+                applyDamageAndEffects(target, attacker, selectedAttack, damageData, attackResult, targetId, charId, attackRoll);
+                resolveAnim();
+            });
+            attackResult.log.push(`${attacker.character.name} bohrt sich mit rotierenden Bewegungen in ${target.character.name} hinein!`);
+        } else {
+            // Standard melee attack animation with damage calculation
+            animateMeleeAttack(charId, attacker, target, attackerSize, targetSize, () => {
+                const damageData = calculateFinalDamage(selectedAttack, target, attacker, attackRoll);
+                applyDamageAndEffects(target, attacker, selectedAttack, damageData, attackResult, targetId, charId, attackRoll);
+                resolveAnim();
+            });
+        }
+    });
+    
+    await attackAnimPromise;
+}
+
+/**
+ * Main attack execution function - refactored for clarity
  * @param {Object} attacker - Attacker character data
  * @param {Object} target - Target character data
  * @returns {Promise<Object>} - Attack results
  */
-export async function performAttack(attacker, target) {    
+export async function performAttack(attacker, target) {
+    if (areAttacksInProgress()) {
+        console.log("Waiting for attacks to complete before performing attack...");
+        await waitForAttacksToComplete();
+    }
+    
+    // Check if the attacker is in an animation state
     const characterPositions = getCharacterPositions();
-    const attackerName = attacker.character.name;
-    const targetName = target.character.name;
+
+    const attackerId = Object.keys(characterPositions).find(id => 
+        characterPositions[id].character === attacker.character);
+    
+    if (attackerId && isCharacterInAnimation(attacker.character, characterPositions[attackerId])) {
+        return {
+            attacker: attacker.character.name,
+            target: target.character.name,
+            success: false,
+            attackRolls: [],
+            defenseRolls: [],
+            damage: 0
+        };
+    }
+
     const targetId = Object.keys(characterPositions).find(id => characterPositions[id].character === target.character);
     const charId = Object.keys(characterPositions).find(id => characterPositions[id].character === attacker.character);
     
     if (!targetId) {
         console.error('Target character ID not found');
         return {
-            attacker: attackerName,
-            target: targetName,
+            attacker: attacker.character.name,
+            target: target.character.name,
             success: false,
             attackRolls: [],
             defenseRolls: [],
@@ -597,573 +1003,180 @@ export async function performAttack(attacker, target) {
         };
     }
     
-    // Create and store a promise for this attack
-    const attackPromise = new Promise(async (resolveAttack) => {
-        try {
-            // Get the best attack for this target
-            const selectedAttack = await getBestAttack(attacker, target);
-            
-            // If no valid attack found, return failure
-            if (!selectedAttack) {
-                resolveAttack({
-                    attacker: attackerName,
-                    target: targetName,
-                    success: false,
-                    attackRolls: [],
-                    defenseRolls: [],
-                    damage: 0,
-                    log: [`${attackerName} kann ${targetName} nicht angreifen!`]
-                });
-                return;
-            }
-            
-            // Check if line of sight is blocked for ranged attacks
-            if (selectedAttack.type === 'ranged' && isLineOfSightBlockedByAlly(attacker, target)) {
-                resolveAttack({
-                    attacker: attackerName,
-                    target: targetName,
-                    success: false,
-                    attackRolls: [],
-                    defenseRolls: [],
-                    damage: 0,
-                    log: [`${attackerName} can't get a clear shot - an ally is in the way!`]
-                });
-                return;
-            }
-            
-            // Get modified GENA value based on weapon type and skills
-            const genaValue = getModifiedGena(attacker, selectedAttack);
-            
-            // Initialize attack results
-            const attackResult = {
-                attacker: attackerName,
-                target: targetName,
+    try {
+        const selectedAttack = await getBestAttack(attacker, target);
+
+        if (!selectedAttack) {
+            return {
+                attacker: attacker.character.name,
+                target: target.character.name,
                 success: false,
                 attackRolls: [],
                 defenseRolls: [],
                 damage: 0,
-                forcedRolls: 0,
-                log: []
+                log: [`${attacker.character.name} kann ${target.character.name} nicht angreifen!`]
             };
-            
-            // Reduce PP for non-Verzweifler attacks at the start
-            if (selectedAttack.weaponName !== "Verzweifler" && selectedAttack.pp !== undefined) {
-                // Initialize currentPP if it doesn't exist
-                if (selectedAttack.currentPP === undefined) {
-                    selectedAttack.currentPP = selectedAttack.pp;
-                }
-                
-                // Reduce PP by 1, minimum 0
-                selectedAttack.currentPP = Math.max(0, selectedAttack.currentPP - 1);
-                
-                attackResult.log.push(`${attackerName} benutzt ${selectedAttack.weaponName} (${selectedAttack.currentPP}/${selectedAttack.pp} AP übrig).`);
-            } else {
-                attackResult.log.push(`${attackerName} benutzt ${selectedAttack.weaponName}.`);
-            }
-            
-            // Roll for attack
-            let attackRoll = rollAttackDice(genaValue);
-            attackResult.attackRolls.push(attackRoll);
-            
-            attackResult.log.push(`${attackerName} greift ${targetName} mit ${selectedAttack.weaponName} an und würfelt: [${attackRoll.rolls.join(', ')}] - ${attackRoll.successes} Erfolge, ${attackRoll.failures} Fehlschläge = ${attackRoll.netSuccesses} Netto.`);
-                        
-            // Check if the attack roll was bad and we should use a luck token
-            if (attackRoll.netSuccesses <= 0 && shouldUseLuckToken(attacker.character, attackRoll)) {
-                // Use a luck token to reroll the attack
-                const luckTokenResult = useLuckToken(attacker.character, attackRoll, genaValue, charId);
-                
-                if (luckTokenResult.success) {
-                    // Log the luck token usage
-                    attackResult.log.push(luckTokenResult.message);
-                    
-                    // Use the better roll
-                    attackRoll = luckTokenResult.roll;
-                    attackResult.attackRolls.push(attackRoll);
-                }
-            }
-            
-            // Handle forced rolls if net successes is exactly 0
-            let forcedCount = 0;
-            const forcingMode = attacker.character.forcingMode || 'always'; // Default to 'always'
-            let usedLuckToken = false;
+        }
 
-            while (attackRoll.netSuccesses === 0) {
-                forcedCount++;
-                attackResult.forcedRolls++;
-                
-                attackResult.log.push(`${attackerName} erhält genau 0 Erfolge und forciert!`);
-                
-                // Perform forced roll with penalty - pass the forcing mode
-                attackRoll = forcedRoll(genaValue, forcedCount, forcingMode);
-                attackResult.attackRolls.push(attackRoll);
-                
-                attackResult.log.push(`Forcieren-Wurf (${forcedCount}): [${attackRoll.rolls.join(', ')}] mit Erschwernis von ${forcedCount} = ${attackRoll.netSuccesses} Netto.`);
-                
-                // If the forced roll is really bad, consider using a luck token
-                if (attackRoll.netSuccesses < 0 && !usedLuckToken && shouldUseLuckToken(attacker.character, attackRoll)) {
-                    // Use a luck token to reroll
-                    const luckTokenResult = useLuckToken(attacker.character, attackRoll, genaValue);
-                    
-                    if (luckTokenResult.success) {
-                        usedLuckToken = true;
-                        // Log the luck token usage
-                        attackResult.log.push(luckTokenResult.message);
-                        
-                        // Use the better roll
-                        attackRoll = luckTokenResult.roll;
-                        attackResult.attackRolls.push(attackRoll);
-                    }
-                }
-                
-                // For the different forcing modes, check if we should stop forcing
-                if (forcingMode === 'once' && forcedCount >= 1) {
-                    break;
-                } else if (forcingMode === 'dynamic') {
-                    const maxForcedRolls = Math.floor(genaValue / 4) + 1;
-                    if (forcedCount >= maxForcedRolls) {
-                        break;
-                    }
-                } else if (forcingMode === 'never') {
-                    break;
-                }
-            }
-            
-            // Check if attack misses
-            if (attackRoll.netSuccesses <= 0) {                
-                // Handle different miss visualizations based on attack type
-                if (selectedAttack.type === 'ranged') {
-                    // Create a Promise for the projectile animation
-                    const projectilePromise = new Promise((resolveProjectile) => {
-                        // Fire a projectile that misses
-                        fireProjectile(attacker, target, selectedAttack, false, () => {
-                            resolveProjectile();
-                        });
-                    });
-                    
-                    // Start the projectile update loop
-                    startProjectileSystem();
-                    
-                    // Wait for projectile to complete before resolving
-                    await projectilePromise;
-                } else {
-                    // For melee attacks, show miss message
-                    createMissMessage(target);
-                    
-                    // Get size categories for both Pokemon
-                    const attackerSize = calculateSizeCategory(attacker.character);
-                    const targetSize = calculateSizeCategory(target.character);
-                    
-                    // Show miss animation for melee attacks
-                    const attackAnimPromise = new Promise((resolveAnim) => {
-                        animateMeleeAttack(charId, attacker, target, attackerSize, targetSize, () => {
-                            resolveAnim();
-                        });
-                    });
-                    
-                    // Wait for animation to complete
-                    await attackAnimPromise;
-                }
-                
-                resolveAttack(attackResult);
-                return;
-            }
-            
-            // Attack hits, attempt dodge
-            attackResult.log.push(`${attackerName}s Angriff trifft mit ${attackRoll.netSuccesses} Erfolgen.`);
-            
-            // Attempt dodge with new simplified system
-            const { attemptDodge, chooseDodgePosition } = await import('./dodgeSystem.js');
-            const dodgeResult = attemptDodge(attacker, target, attackRoll, selectedAttack);
-            
-            // Store the defense roll in the attack result
-            if (dodgeResult.roll) {
-                attackResult.defenseRolls.push(dodgeResult.roll);
-            }
-            
-            // Handle ranged and melee attacks differently for dodging
-            if (selectedAttack.type === 'ranged') {
-                // For ranged attacks, both projectile and dodge happen simultaneously
-                
-                // If the dodge attempt failed with negative success, increase attacker's net successes
-                if (!dodgeResult.success && dodgeResult.roll && dodgeResult.roll.netSuccesses < 0) {
-                    const dodgeFailureBonus = Math.abs(dodgeResult.roll.netSuccesses);
-                    attackRoll.netSuccesses += dodgeFailureBonus;
-                    
-                    attackResult.log.push(`${targetName} verschlechtert seine Position durch den Ausweichversuch! ${attackerName} erhält +${dodgeFailureBonus} Erfolge.`);
-                }
-                
-                // If dodge was successful
-                if (dodgeResult.success) {
-                    // Get a dodge position
-                    const dodgePos = chooseDodgePosition(target, attacker, true);
-                    
-                    // If there's a valid position to dodge to
-                    if (dodgePos) {                        
-                        // Create a Promise for the projectile
-                        const projectilePromise = new Promise((resolveProjectile) => {
-                            // Fire projectile - it might still hit something!
-                            fireProjectile(attacker, target, selectedAttack, true, () => {
-                                resolveProjectile();
-                            });
-                        });
-                        
-                        // Start projectile system
-                        startProjectileSystem();
-                        
-                        // Start dodge animation - don't wait for it
-                        const { animateDodge } = await import('./animationManager.js');
-                        animateDodge(targetId, dodgePos, () => {
-                        });
-                        
-                        // Wait for projectile to complete
-                        await projectilePromise;
-                        
-                        // Now resolve the attack
-                        resolveAttack(attackResult);
-                        return;
-                    } else {
-                        // Successful dodge roll but nowhere to go
-                        attackResult.log.push(`${targetName} versucht auszuweichen, hat aber keinen Platz!`);
-                    }
-                }
-                
-                // If dodge failed or there's no valid position, hit the target
-                attackResult.success = true;
-                attackResult.log.push(`${targetName} konnte nicht ausweichen!`);
-                
-                // Check for critical hit (Volltreffer)
-                const isCriticalHit = checkCriticalHit(attacker.character, selectedAttack, attackRoll.netSuccesses);
-                
-                // Calculate damage
-                const damageRoll = calculateDamage(selectedAttack, target, attacker);
-                
-                // Apply critical hit damage multiplier if applicable
-                if (isCriticalHit) {
-                    damageRoll.total *= 2; // Double the damage
-                    attackResult.log.push(`VOLLTREFFER! Der Angriff verursacht doppelten Schaden!`);
-                }
-                
-                attackResult.damage = damageRoll.total;
-                
-                // Add effectiveness message if available
-                let effectivenessType = '';
-                if (selectedAttack.effectivenessDesc) {
-                    attackResult.log.push(`Der Angriff ${selectedAttack.effectivenessDesc}!`);
-                    
-                    // Determine effectiveness type for damage number styling
-                    if (selectedAttack.effectivenessDesc.includes("sehr effektiv")) {
-                        effectivenessType = 'super';
-                    } else if (selectedAttack.effectivenessDesc.includes("nicht sehr effektiv")) {
-                        effectivenessType = 'notvery';
-                    }
-                }
-                
-                // Log damage details
-                attackResult.log.push(`${targetName} kann nicht ausweichen! ${attackerName} verursacht ${damageRoll.total} Schaden mit ${selectedAttack.weaponName} [${damageRoll.modifiedDiceCount}d6: ${damageRoll.rolls.join(', ')}].`);
-                
-                // Create a Promise for the projectile animation and damage
-                const projectilePromise = new Promise((resolveProjectile) => {
-                    // Fire a projectile that hits, with damage and effectiveness info
-                    fireProjectile(attacker, target, selectedAttack, true, (hitSuccess) => {
-                        // Apply damage with effectiveness
-                        createDamageNumber(damageRoll.total, target, damageRoll.total >= 8, effectivenessType);
-                        
-                        // Apply damage to target
-                        const oldKP = parseInt(getCurrentKP(target.character), 10);
-                        const damageAmount = parseInt(damageRoll.total, 10);
-                        target.character.currentKP = Math.max(0, oldKP - damageAmount);
-                        
-                        updatePokemonHPBar(targetId, target.character);
-                        
-                        //Wake up from damage
-                        if (damageAmount > 0) {
-                            const wokeUp = wakeUpFromDamage(target.character, damageAmount);
-                            if (wokeUp) {
-                                attackResult.log.push(`${targetName} wurde durch den Angriff geweckt!`);
-                            }
-                        }
+        handleSandAttackCounter(attacker.character, selectedAttack);
+        
+        // Create a unique ID for this attack
+        const attackId = `${attacker.character.uniqueId}_${target.character.uniqueId}_${Date.now()}_${Math.random()}`;
+        
+        // Handle special attack types with safe callbacks
+        if (isConeAttack(selectedAttack)) {
+            const safeCallback = createSafeCallback(attackId, () => {
+                // The cone attack callback logic would go here
+                // This ensures endTurn() is only called once
+            });
+            return await handleConeAttack(attacker, target, selectedAttack, charId, safeCallback);
+        }
 
-                        // On-Hit-Effekte
-                        if (attackResult.success && attackRoll.netSuccesses >= 0) {
-                            if(selectedAttack.weaponName === "Glut"){
-                                // Check if target is a Fire type
-                                const isImmuneType = target.character.pokemonTypes && 
-                                                target.character.pokemonTypes.some(type => 
-                                                    type.toLowerCase() === 'fire' || type.toLowerCase() === 'feuer');
-                                
-                                if (!isImmuneType) {
-                                    // Apply burned status effect to the target
-                                    const statusApplied = applyStatusEffectFromAttack(target.character, 'burned', attacker.character);
-                                    
-                                    if (statusApplied) {
-                                        attackResult.log.push(`${attackerName}s Glut verursacht eine Verbrennung bei ${targetName}!`);
-                                    }
-                                } else {
-                                    // Log that the Fire-type is immune to burns
-                                    attackResult.log.push(`${targetName} ist als Feuer-Pokémon immun gegen Verbrennungen!`);
-                                }
-                            }
-                            
-                            if(selectedAttack.weaponName === "Donnerschock"){
-                                // Check if target is an Electric or Ground type
-                                const isImmuneType = target.character.pokemonTypes && 
-                                                target.character.pokemonTypes.some(type => 
-                                                    type.toLowerCase() === 'ground' || type.toLowerCase() === 'boden' || type.toLowerCase() === 'electric' || type.toLowerCase() === 'elektro');
-                                
-                                if (!isImmuneType) {
-                                    // Apply paralyzed status effect to the target
-                                    const statusApplied = applyStatusEffectFromAttack(target.character, 'paralyzed', attacker.character);
-                                    
-                                    if (statusApplied) {
-                                        attackResult.log.push(`${attackerName}s Donnerschock paralysiert ${targetName}!`);
-                                    }
-                                } else {
-                                    // Log that some Pokemon are immune to burns
-                                    attackResult.log.push(`${targetName} ist gegen Paralyse!`);
-                                }
-                            }
-                        }
-                        
-                        // Create Volltreffer effect if applicable
-                        if (isCriticalHit) {
-                            createVolltrefferEffect(target);
-                        }
-                                                
-                        // Update initiative HP display
-                        updateInitiativeHP();
-                        
-                        // Log remaining HP
-                        attackResult.log.push(`${targetName} hat noch ${target.character.currentKP} KP übrig.`);
-                        
-                        // Check if target was defeated
-                        if (target.character.currentKP <= 0) {
-                            attackResult.log.push(`${targetName} ist besiegt und verlässt den Kampf!`);
-                            
-                            // Handle luck token reset for kill
-                            handleKillLuckTokenReset(charId);
-                            
-                            // Calculate the max tokens based on the formula
-                            const baseStatTotal = attacker.character.statsDetails?.baseStatTotal || 500;
-                            const maxTokens = Math.max(1, Math.floor((600 - baseStatTotal) / 80) + 1);
-                            
-                            attackResult.log.push(`${attackerName} hat einen Gegner besiegt und erhält alle Glücks-Tokens zurück! (${maxTokens})`);
-                        }
-                        
-                        resolveProjectile();
-                    }, false, damageRoll.total); // false = don't skip damage
-                });
-                
-                // Start the projectile update loop
-                startProjectileSystem();
-                
-                // Wait for the projectile to complete
-                await projectilePromise;
-                
-                // Now resolve the attack
-                resolveAttack(attackResult);
-            } else {
-                // For melee attacks, a successful dodge completely prevents the hit
-                
-                // If the dodge attempt failed with negative success, increase attacker's net successes
-                if (!dodgeResult.success && dodgeResult.roll && dodgeResult.roll.netSuccesses < 0) {
-                    const dodgeFailureBonus = Math.abs(dodgeResult.roll.netSuccesses);
-                    attackRoll.netSuccesses += dodgeFailureBonus;
-                    
-                    attackResult.log.push(`${targetName} verschlechtert seine Position durch den Ausweichversuch! ${attackerName} erhält +${dodgeFailureBonus} Erfolge.`);
-                }
-                
-                // Get size categories for both Pokemon
-                const attackerSize = calculateSizeCategory(attacker.character);
-                const targetSize = calculateSizeCategory(target.character);
-                
-                // If dodge was successful
-                if (dodgeResult.success) {
-                    // Get a dodge position
-                    const dodgePos = chooseDodgePosition(target, attacker, false);
-                    
-                    // If there's a valid position to dodge to
-                    if (dodgePos) {
-                        attackResult.log.push(`${targetName} weicht dem Nahkampfangriff aus!`);
-                        
-                        // Create promises for both animations
-                        const dodgePromise = new Promise((resolveDodge) => {
-                            // For dodge animation - start later
-                            setTimeout(() => {
-                                animateDodge(targetId, dodgePos, () => {
-                                    resolveDodge();
-                                });
-                            }, 200); // Start dodge after attack animation starts
-                        });
-                        
-                        // Animate the attack even if dodge is successful
-                        const attackPromise = new Promise((resolveAttack) => {
-                            animateMeleeAttack(charId, attacker, target, attackerSize, targetSize, () => {
-                                resolveAttack();
-                            });
-                        });
-                        
-                        // Wait for both animations to complete
-                        await Promise.all([attackPromise, dodgePromise]);
-                        
-                        // Melee attack completely misses if dodge is successful
-                        resolveAttack(attackResult);
-                        return;
-                    } else {
-                        // Successful dodge roll but nowhere to go
-                        attackResult.log.push(`${targetName} versucht auszuweichen, hat aber keinen Platz!`);
-                    }
-                }
-                
-                // If dodge failed or there's no valid position, hit the target
-                attackResult.success = true;
-                attackResult.log.push(`${targetName} konnte nicht ausweichen!`);
-                
-                // Create a promise for the attack animation
-                const attackAnimPromise = new Promise((resolveAnim) => {
-                    // Check if this is the Schlitzer attack and it hit
-                    if (selectedAttack.weaponName === "Schlitzer" && attackResult.success) {
-                        // Play the claw slash animation on the target
-                        animateClawSlash(target, () => {
-                            // Animation complete - no additional action needed
-                        });
-                        
-                        // Add a message to the log
-                        attackResult.log.push(`${attackerName}s Schlitzer-Angriff hinterlässt tiefe Kratzspuren!`);
-                    }
+        if (selectedAttack.weaponName === "Kreuzschere") {
+            const safeCallback = createSafeCallback(attackId, () => {
+                // Kreuzschere callback logic
+            });
+            return await handleKreuzschereAttack(attacker, target, selectedAttack, charId, targetId, safeCallback);
+        }
+        
+        if (selectedAttack.weaponName === "Rankenhieb") {
+            const safeCallback = createSafeCallback(attackId, () => {
+                // Rankenhieb callback logic
+            });
+            return await handleRankenhiebAttack(attacker, target, selectedAttack, charId, targetId, safeCallback);
+        }
 
-                    animateMeleeAttack(charId, attacker, target, attackerSize, targetSize, () => {
-                        // Once animation completes, apply damage and show damage number
-                        
-                        // Check for critical hit (Volltreffer)
-                        const isCriticalHit = checkCriticalHit(attacker.character, selectedAttack, attackRoll.netSuccesses);
-                        
-                        // Calculate damage with advanced rules
-                        const damageRoll = calculateDamage(selectedAttack, target, attacker);
-                        //Exclude status moves, which always deal 0 damage, from crits and stuff!
-                        if(damageRoll.total > 0){
-                            // Apply critical hit damage multiplier if applicable
-                            if (isCriticalHit && damageRoll) {
-                                damageRoll.total *= 2; // Double the damage
-                                attackResult.log.push(`VOLLTREFFER! Der Angriff verursacht doppelten Schaden!`);
-                                
-                                // Create the Volltreffer visual effect
-                                createVolltrefferEffect(target);
-                            }
-                            
-                            attackResult.damage = damageRoll.total;
-                            
-                            // Add effectiveness message if available
-                            let effectivenessType = '';
-                            if (selectedAttack.effectivenessDesc) {
-                                attackResult.log.push(`Der Angriff ${selectedAttack.effectivenessDesc}!`);
-                                
-                                if (selectedAttack.effectivenessDesc.includes("sehr effektiv")) {
-                                    effectivenessType = 'super';
-                                } else if (selectedAttack.effectivenessDesc.includes("nicht sehr effektiv")) {
-                                    effectivenessType = 'notvery';
-                                }
-                            }
-                            
-                            // Show damage number with effectiveness styling
-                            createDamageNumber(damageRoll.total, target, damageRoll.total >= 8, effectivenessType);
-                            
-                            // Log damage details
-                            attackResult.log.push(`${targetName} kann nicht ausweichen! ${attackerName} verursacht ${damageRoll.total} Schaden mit ${selectedAttack.weaponName} [${damageRoll.modifiedDiceCount}d6: ${damageRoll.rolls.join(', ')}].`);
-                            
-                            // Apply damage to target
-                            const oldKP = parseInt(getCurrentKP(target.character), 10);
-                            const damageAmount = parseInt(damageRoll.total, 10);
-                            target.character.currentKP = Math.max(0, oldKP - damageAmount);
+        if (selectedAttack.weaponName === "Walzer") {
+            const safeCallback = createSafeCallback(attackId, () => {
+                // Walzer callback logic
+            });
+            return await handleWalzerAttack(attacker, target, selectedAttack, charId, targetId, safeCallback);
+        }
+        
+        if (selectedAttack.weaponName === "Toxin") {
+            const safeCallback = createSafeCallback(attackId, () => {
+                // Toxin callback logic
+            });
+            return await handleToxinAttack(attacker, target, selectedAttack, charId, targetId, safeCallback);
+        }
 
-                            updatePokemonHPBar(targetId, target.character);
-                            
-                            // Update HP bar immediately
-                            updatePokemonHPBar(targetId, target.character);
+        if (selectedAttack.weaponName === "Flammenwurf") {
+            const safeCallback = createSafeCallback(attackId, () => {
+                // Flammenwurf callback logic
+            });
+            return await handleFlammenwurfAttack(attacker, target, selectedAttack, charId, targetId, safeCallback);
+        }
 
-                            //Wake up from damage
-                            if (damageAmount > 0) {
-                                const wokeUp = wakeUpFromDamage(target.character, damageAmount);
-                                if (wokeUp) {
-                                    attackResult.log.push(`${targetName} wurde durch den Angriff geweckt!`);
-                                }
-                            }
+        if (selectedAttack.weaponName === "Blubbstrahl") {
+            const safeCallback = createSafeCallback(attackId, () => {
+                // Blubbstrahl callback logic
+            });
+            return await handleBlubbstrahlAttack(attacker, target, selectedAttack, charId, targetId, safeCallback);
+        }
 
-                            // Check if this is a Verzweifler attack and apply self-damage
-                            if (selectedAttack.weaponName === "Verzweifler") {
-                                const recoilDamage = Math.ceil(damageAmount * 0.5); // 50% rounded up
-                                const attackerOldKP = parseInt(getCurrentKP(attacker.character), 10);
-                                attacker.character.currentKP = Math.max(0, attackerOldKP - recoilDamage);
-                                
-                                updatePokemonHPBar(charId, attacker.character);
-                                
-                                // Log the recoil damage
-                                attackResult.log.push(`${attackerName} nimmt ${recoilDamage} Rückstoßschaden von Verzweifler!`);
-                                
-                                // Create damage number for attacker
-                                createDamageNumber(recoilDamage, attacker, false, 'recoil');
-
-                                if (attacker.character.currentKP <= 0) {
-                                    attackResult.log.push(`${attackerName} wurde durch Rückstoßschaden besiegt!`);
-                                    
-                                    // Add this line to mark the attacker as defeated
-                                    removeDefeatedCharacter(charId);
-                                }
-                                
-                                // Update initiative HP display again
-                                updateInitiativeHP();
-                            }    
-                            
-                            // Update initiative HP display
-                            updateInitiativeHP();
-                            
-                            // Log remaining HP
-                            attackResult.log.push(`${targetName} hat noch ${target.character.currentKP} KP übrig.`);
-                        }  
-                        // Check if target was defeated
-                        if (target.character.currentKP <= 0) {
-                            attackResult.log.push(`${targetName} ist besiegt und verlässt den Kampf!`);
-                            
-                            // Handle luck token reset for kill
-                            handleKillLuckTokenReset(charId);
-                            
-                            // Calculate the max tokens based on the formula
-                            const baseStatTotal = attacker.character.statsDetails?.baseStatTotal || 500;
-                            const maxTokens = Math.max(1, Math.floor((600 - baseStatTotal) / 80) + 1);
-                            
-                            attackResult.log.push(`${attackerName} hat einen Gegner besiegt und erhält alle Glücks-Tokens zurück! (${maxTokens})`);
-                        }
-                        
-                        resolveAnim();
-                    });
-                });
-                
-                // Wait for the animation to complete
-                await attackAnimPromise;
-                
-                // Add a short delay to let animations render properly
-                setTimeout(() => {
-                    resolveAttack(attackResult);
-                }, 50);
-            }
-        } catch (error) {
-            console.error("Error during attack execution:", error);
-            resolveAttack({
-                attacker: attackerName,
-                target: targetName,
+        if (selectedAttack.weaponName === "Donner") {
+            const safeCallback = createSafeCallback(attackId, () => {
+                // Donner callback logic
+            });
+            return await handleDonnerAttack(attacker, target, selectedAttack, charId, targetId, safeCallback);
+        }
+        
+        // Check line of sight for ranged attacks
+        if (selectedAttack.type === 'ranged' && isLineOfSightBlockedByAlly(attacker, target)) {
+            return {
+                attacker: attacker.character.name,
+                target: target.character.name,
                 success: false,
                 attackRolls: [],
                 defenseRolls: [],
                 damage: 0,
-                log: [`Error during attack: ${error.message}`]
-            });
+                log: [`${attacker.character.name} can't get a clear shot - an ally is in the way!`]
+            };
         }
-    });
-    
-    // Add this attack to the active promises
-    activeAttackPromises.push(attackPromise);
-    
-    // Return the promise
-    return attackPromise;
+        
+        // Standard attack flow with safe callback
+        const attackResult = initializeAttackResult(attacker, target, selectedAttack);
+        const genaValue = getModifiedGena(attacker, selectedAttack);
+        
+        // Execute attack roll
+        let attackRoll = rollAttackDice(genaValue);
+        attackResult.attackRolls.push(attackRoll);
+
+        // Apply Blitzkanone GENA penalty if applicable
+        if (selectedAttack.weaponName && selectedAttack.weaponName.toLowerCase() === 'blitzkanone') {
+            const originalNet = attackRoll.netSuccesses;
+            attackRoll = applyBlitzkanoneGENAPenalty(attackRoll);
+            attackResult.log.push(`${attacker.character.name} greift ${target.character.name} mit ${selectedAttack.weaponName} an und würfelt: [${attackRoll.rolls.join(', ')}] - ${attackRoll.successes} Erfolge, ${attackRoll.failures} Fehlschläge = ${originalNet} Netto (${attackRoll.netSuccesses} nach Blitzkanone-Malus).`);
+        } else {
+            attackResult.log.push(`${attacker.character.name} greift ${target.character.name} mit ${selectedAttack.weaponName} an und würfelt: [${attackRoll.rolls.join(', ')}] - ${attackRoll.successes} Erfolge, ${attackRoll.failures} Fehlschläge = ${attackRoll.netSuccesses} Netto.`);
+        }
+
+        // Handle luck tokens and forcing
+        attackRoll = await handleLuckTokensAndForcing(attacker, attackRoll, genaValue, charId, attackResult);
+        
+        // Get weather evasion threshold
+        const hitThreshold = getWeatherEvasionThreshold(target);
+
+        // Check for miss
+        if (attackRoll.netSuccesses < hitThreshold) {
+            if (hitThreshold > 1) {
+                const abilities = target.character.statsDetails?.abilities || [];
+                const currentWeather = getCurrentWeather();
+                
+                let abilityName = "";
+                if (abilities.some(a => a.name === "Sandschleier" || a.englishName === "sand-veil") && 
+                    currentWeather.state === WEATHER_TYPES.SANDSTURM) {
+                    abilityName = "Sandschleier";
+                } else if (abilities.some(a => a.name === "Schneemantel" || a.englishName === "snow-cloak") && 
+                        (currentWeather.state === WEATHER_TYPES.HAGEL || currentWeather.state === WEATHER_TYPES.SCHNEE)) {
+                    abilityName = "Schneemantel";
+                }
+                
+                attackResult.log.push(`${target.character.name}s ${abilityName} nutzt das Wetter aus! Mindestens ${hitThreshold} Erfolge erforderlich.`);
+            }
+            await handleAttackMiss(attacker, target, selectedAttack, charId);
+            return attackResult;
+        }
+        
+        // Attack hits, attempt dodge
+        attackResult.log.push(`${attacker.character.name}s Angriff trifft mit ${attackRoll.netSuccesses} Erfolgen.`);
+        
+        const { attemptDodge } = await import('./dodgeSystem.js');
+        const dodgeResult = attemptDodge(attacker, target, attackRoll, selectedAttack);
+        
+        if (dodgeResult.roll) {
+            attackResult.defenseRolls.push(dodgeResult.roll);
+        }
+        
+        // Create safe callback for the projectile
+        const projectileCallback = createSafeCallback(attackId, (hitSuccess) => {
+            // This callback will eventually lead to endTurn() being called
+            // but now it's protected against duplicate execution
+        });
+        
+        // Execute attack based on type with safe callback
+        if (selectedAttack.type === 'ranged') {
+            await executeRangedAttack(attacker, target, selectedAttack, attackRoll, attackResult, dodgeResult, targetId, charId, projectileCallback);
+        } else {
+            await executeMeleeAttack(attacker, target, selectedAttack, attackRoll, attackResult, dodgeResult, targetId, charId, projectileCallback);
+        }
+        
+        // Add to active promises and return
+        activeAttackPromises.push(Promise.resolve(attackResult));
+        return attackResult;
+        
+    } catch (error) {
+        console.error("Error during attack execution:", error);
+        return {
+            attacker: attacker.character.name,
+            target: target.character.name,
+            success: false,
+            attackRolls: [],
+            defenseRolls: [],
+            damage: 0,
+            log: [`Error during attack: ${error.message}`]
+        };
+    }
 }
 
 /**
@@ -1190,7 +1203,9 @@ export function isTargetInRange(attacker, target) {
                 continue;
             }
             
-            if (attack.range >= distance) {
+            // Use effective range for selection (cone attacks get -1 penalty)
+            const effectiveRange = getEffectiveRangeForSelection(attack);
+            if (effectiveRange >= distance) {
                 // For ranged attacks, also check line of sight
                 if (attack.type === 'ranged' && isLineOfSightBlockedByAlly(attacker, target)) {
                     continue;
@@ -1247,31 +1262,6 @@ export function applyStatusEffectFromAttack(target, effectId, source) {
   return false;
 }
 
-// Example function to determine status effects based on attack type
-export function getStatusEffectForAttackType(attackType, moveType) {
-  // Common Pokémon move types that cause status effects
-  switch (moveType) {
-    case 'poison':
-      return Math.random() < 0.3 ? 'poisoned' : null;
-    case 'fire':
-      return Math.random() < 0.2 ? 'burned' : null;
-    case 'electric':
-      return Math.random() < 0.3 ? 'paralyzed' : null;
-    case 'ice':
-      return Math.random() < 0.1 ? 'frozen' : null;
-    case 'psychic':
-      return Math.random() < 0.2 ? 'confused' : null;
-    case 'ghost':
-      return Math.random() < 0.15 ? 'cursed' : null;
-    case 'grass':
-      return Math.random() < 0.25 ? 'seeded' : null;
-    case 'fairy':
-      return Math.random() < 0.2 ? 'infatuated' : null;
-    default:
-      return null;
-  }
-}
-
 /**
  * Check if an attack results in a critical hit
  * @param {Object} attacker - The attacking character
@@ -1304,10 +1294,241 @@ export function checkCriticalHit(attacker, attack, netSuccesses) {
     if (highCritAttacks.includes(attackName)) {
         threshold -= 1;
     }
+
+    // Check for "aiming"/"zielend" strategy with ranged attacks
+    if ((attacker.strategy === 'aiming' || attacker.strategy === 'zielend') && 
+        attack.range > 1) {
+        threshold -= 1;
+    }
     
     // Ensure threshold never goes below 2
     threshold = Math.max(2, threshold);
     
     // Check if net successes meets or exceeds the threshold
     return netSuccesses >= threshold;
+}
+
+/**
+ * Find the nearest ally to a character considering all occupied tiles
+ * @param {Object} character - Character object
+ * @param {number} teamIndex - Team index of the character
+ * @param {number} currentX - Current x position
+ * @param {number} currentY - Current y position
+ * @param {string} excludeCharId - Character ID to exclude (usually self)
+ * @returns {Object|null} - Nearest ally position or null if none found
+ */
+export function findNearestAlly(character, teamIndex, currentX, currentY, excludeCharId = null) {
+    const characterPositions = getCharacterPositions();
+    let nearestAlly = null;
+    let minDistance = Infinity;
+    
+    // Position of the current Pokémon
+    const currentPos = { 
+        x: currentX, 
+        y: currentY, 
+        character: character 
+    };
+    
+    // Check all characters
+    for (const charId in characterPositions) {
+        const pos = characterPositions[charId];
+        
+        // Skip if different team, defeated, or if it's the excluded character (usually self)
+        if (pos.teamIndex !== teamIndex || pos.isDefeated || charId === excludeCharId) continue;
+        
+        // Calculate minimum distance between all occupied tiles
+        const distance = calculateMinDistanceBetweenPokemon(currentPos, pos);
+        
+        // Update if this is closer
+        if (distance < minDistance) {
+            minDistance = distance;
+            nearestAlly = {
+                x: pos.x,
+                y: pos.y,
+                character: pos.character,
+                distance: distance,
+                id: charId // Store character ID for easier reference
+            };
+        }
+    }
+    
+    return nearestAlly;
+}
+
+/**
+ * Find the nearest ally in attack range considering all occupied tiles
+ * @param {Object} charData - Character data
+ * @param {string} excludeCharId - Character ID to exclude (usually self)
+ * @returns {Promise<Object|null>} - Promise resolving to nearest ally in range or null if none
+ */
+export async function findNearestAllyInRange(charData, excludeCharId = null) {
+    const characterPositions = getCharacterPositions();
+    const character = charData.character;
+    const teamIndex = charData.teamIndex;
+    
+    // Get all valid attacks with ammo/PP
+    const validAttacks = (character.attacks || []).filter(attack => {
+        return attack.weaponName === "Verzweifler" || 
+               (attack.pp === undefined || attack.currentPP === undefined || attack.currentPP > 0);
+    });
+    
+    // Separate ranged and non-ranged attacks
+    const rangedAttacks = validAttacks.filter(attack => attack.type === 'ranged');
+    const meleeAttacks = validAttacks.filter(attack => attack.type === 'melee');
+    
+    // Get the maximum range for each attack type (using effective range for cone attacks)
+    const maxRangedRange = rangedAttacks.length > 0 ? 
+        Math.max(...rangedAttacks.map(attack => getEffectiveRangeForSelection(attack))) : 0;
+    const maxMeleeRange = meleeAttacks.length > 0 ? 
+        Math.max(...meleeAttacks.map(attack => getEffectiveRangeForSelection(attack))) : 0;
+    
+    // Candidates array to store potential targets with priority info
+    const candidates = [];
+    
+    // Check all characters for potential ally targets
+    for (const charId in characterPositions) {
+        const pos = characterPositions[charId];
+        
+        // Skip if different team, defeated, or if it's the excluded character
+        if (pos.teamIndex !== teamIndex || pos.isDefeated || charId === excludeCharId) continue;
+        
+        // Calculate minimum distance between all occupied tiles
+        const distance = calculateMinDistanceBetweenPokemon(charData, pos);
+        
+        // For each valid attack, check if this ally is in range
+        for (const attack of validAttacks) {
+            const effectiveRange = getEffectiveRangeForSelection(attack);
+            if (distance > effectiveRange) continue;
+            
+            // For ranged attacks, check line of sight
+            if (attack.type === 'ranged') {
+                // Check if blocked by another character
+                const blocked = isLineOfSightBlockedByAlly(charData, pos);
+                if (blocked) continue;
+            }
+            
+            // Calculate priority for this target (closer = higher priority)
+            let targetPriority = 1000 - distance;
+            
+            // Add to candidates with priority
+            candidates.push({
+                id: charId,
+                x: pos.x,
+                y: pos.y,
+                character: pos.character,
+                distance: distance,
+                attack: attack,
+                priority: targetPriority
+            });
+            
+            break; // One valid attack is enough to add this target
+        }
+    }
+    
+    // No valid ally targets
+    if (candidates.length === 0) return null;
+    
+    // Sort by priority (highest first)
+    candidates.sort((a, b) => b.priority - a.priority);
+    
+    // Return highest priority ally target
+    return candidates[0];
+}
+
+/**
+ * Create a safe callback wrapper that prevents duplicate executions
+ * @param {string} attackId - Unique identifier for this attack
+ * @param {Function} originalCallback - The original callback function
+ * @returns {Function} - Wrapped callback that can only execute once
+ */
+function createSafeCallback(attackId, originalCallback) {
+    return function safeCallback(...args) {
+        // Check if this callback has already been executed
+        if (activeAttackCallbacks.has(attackId)) {
+            console.warn(`Callback for attack ${attackId} already executed - ignoring duplicate`);
+            return;
+        }
+        
+        // Mark this callback as executed
+        activeAttackCallbacks.add(attackId);
+        
+        try {
+            // Execute the original callback
+            if (typeof originalCallback === 'function') {
+                originalCallback(...args);
+            }
+        } catch (error) {
+            console.error(`Error in attack callback ${attackId}:`, error);
+        } finally {
+            // Remove from active callbacks after a delay to prevent immediate re-execution
+            setTimeout(() => {
+                activeAttackCallbacks.delete(attackId);
+            }, 100);
+        }
+    };
+}
+
+/**
+ * Clear all active attack callbacks - call this during battle reset
+ */
+export function clearActiveAttackCallbacks() {
+    activeAttackCallbacks.clear();
+    console.log("Cleared all active attack callbacks");
+}
+
+/**
+ * Count enemies and allies along a line from attacker through and beyond target
+ * @param {Object} attacker - Attacker character data
+ * @param {Object} target - Target character data
+ * @param {number} maxRange - Maximum range to check along the line (default: 20)
+ * @returns {Object} - {enemies: number, allies: number}
+ */
+function countCharactersOnStrahlLine(attacker, target, maxRange = 20) {
+    const characterPositions = getCharacterPositions();
+    
+    // Calculate direction vector from attacker to target
+    const dx = target.x - attacker.x;
+    const dy = target.y - attacker.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    
+    // If target is at same position as attacker, no valid line
+    if (distance === 0) {
+        return { enemies: 0, allies: 0 };
+    }
+    
+    // Normalize direction vector
+    const dirX = dx / distance;
+    const dirY = dy / distance;
+    
+    let enemyCount = 0;
+    let allyCount = 0;
+    
+    // Check positions along the line from attacker through and beyond target
+    // Start from position 1 (skip attacker's position) and go to maxRange
+    for (let step = 1; step <= maxRange; step++) {
+        const checkX = Math.round(attacker.x + dirX * step);
+        const checkY = Math.round(attacker.y + dirY * step);
+        
+        // Check if any character occupies this position
+        for (const charId in characterPositions) {
+            const charPos = characterPositions[charId];
+            
+            // Skip defeated characters
+            if (charPos.isDefeated) continue;
+            
+            // Skip the attacker (though we shouldn't hit this due to step starting at 1)
+            if (charPos === attacker) continue;
+            
+            // Check if character occupies this tile (accounting for Pokemon size)
+            if (doesPokemonOccupyTile(charPos, checkX, checkY)) {
+                if (charPos.teamIndex === attacker.teamIndex) {
+                    allyCount++;
+                } else {
+                    enemyCount++;
+                }
+            }
+        }
+    }
+    
+    return { enemies: enemyCount, allies: allyCount };
 }

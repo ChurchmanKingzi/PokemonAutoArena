@@ -2,12 +2,12 @@
  * Pokemon Overlay System - Renders all Pokemon sprites above the battlefield
  * This replaces the old system of placing Pokemon within individual tiles
  * Updated to maintain consistent Pokemon sprite sizes across all arena sizes
+ * Now includes status effect icon management
  */
 
 import { TILE_SIZE, GRID_SIZE } from './config.js';
 import { calculateSizeCategory } from './pokemonSizeCalculator.js';
-import { getStrategyText, getStrategyBorderStyle, getTeamColor } from './utils.js';
-import { getCurrentKP } from './utils.js';
+import { getStrategyText, getStrategyBorderStyle, getTeamColor, getCurrentKP } from './utils.js';
 
 // Store the overlay container reference
 let pokemonOverlayContainer = null;
@@ -206,6 +206,9 @@ export function addPokemonToOverlay(charId, pokemonData, teamIndex) {
     // Create HP bar for this Pokemon
     createPokemonHPBar(sprite, charId, pokemonData.character);
     
+    // Create status effect icons for this Pokemon
+    createPokemonStatusIcons(sprite, charId, pokemonData.character);
+    
     return sprite;
 }
 
@@ -333,6 +336,211 @@ function createPokemonHPBar(sprite, charId, character) {
 }
 
 /**
+ * Create status effect icons for a Pokemon sprite
+ * Positions them above the HP bar and scales with size category
+ * @param {HTMLElement} sprite - The Pokemon sprite element
+ * @param {string} charId - Character ID
+ * @param {Object} character - Character data
+ */
+function createPokemonStatusIcons(sprite, charId, character) {
+    // Create status icons container
+    const statusIconsContainer = document.createElement('div');
+    statusIconsContainer.className = 'pokemon-status-icons-container';
+    statusIconsContainer.dataset.characterId = charId;
+    statusIconsContainer.style.position = 'absolute';
+    statusIconsContainer.style.pointerEvents = 'none';
+    statusIconsContainer.style.zIndex = '1500'; // Below damage numbers (9000) but above most other elements
+    statusIconsContainer.style.display = 'flex';
+    statusIconsContainer.style.flexDirection = 'row';
+    statusIconsContainer.style.gap = '2px';
+    statusIconsContainer.style.alignItems = 'center';
+    statusIconsContainer.style.justifyContent = 'center';
+    statusIconsContainer.style.transition = 'all 0.15s ease-out'; // Match sprite transition
+    
+    // Position status icons above the HP bar
+    const updateStatusIconsPosition = () => {
+        const spriteLeft = parseFloat(sprite.style.left);
+        const spriteTop = parseFloat(sprite.style.top);
+        const sizeCategory = parseInt(sprite.dataset.sizeCategory) || 1;
+        
+        // Calculate Y offset - position above HP bar
+        const scaleFactor = TILE_SIZE / BASELINE_TILE_SIZE;
+        const hpBarOffset = scaleFactor * BASE_POKEMON_SIZE * 0.75 + (sizeCategory * scaleFactor * 5);
+        const statusIconOffset = Math.max(15, Math.round(scaleFactor * 20 + sizeCategory * 5)); // Additional offset above HP bar
+        const totalOffset = hpBarOffset + statusIconOffset;
+        
+        statusIconsContainer.style.left = `${spriteLeft}px`;
+        statusIconsContainer.style.top = `${spriteTop - totalOffset}px`;
+        statusIconsContainer.style.transform = 'translateX(-50%)'; // Center horizontally
+    };
+    
+    // Initial positioning
+    updateStatusIconsPosition();
+    
+    // Add to overlay
+    pokemonOverlayContainer.appendChild(statusIconsContainer);
+    
+    // Store references for updates
+    sprite.updateStatusIcons = updateStatusIconsPosition;
+    sprite.statusIconsContainer = statusIconsContainer;
+    
+    // Initialize with current status effects
+    updatePokemonStatusIconsDisplay(sprite, character);
+}
+
+/**
+ * Update the status icons display for a Pokemon
+ * @param {HTMLElement} sprite - The Pokemon sprite element
+ * @param {Object} character - Character data
+ */
+function updatePokemonStatusIconsDisplay(sprite, character) {
+    if (!sprite.statusIconsContainer) return;
+    
+    const container = sprite.statusIconsContainer;
+    const sizeCategory = parseInt(sprite.dataset.sizeCategory) || 1;
+    
+    // Clear existing icons
+    container.innerHTML = '';
+    
+    // Hide container if no status effects
+    if (!character.statusEffects || character.statusEffects.length === 0) {
+        container.style.display = 'none';
+        return;
+    }
+    
+    container.style.display = 'flex';
+    
+    // Calculate icon size based on Pokemon size category and arena scaling
+    const scaleFactor = TILE_SIZE / BASELINE_TILE_SIZE;
+    const baseIconSize = Math.max(12, Math.round(6 * scaleFactor)); // Base size scaled with arena
+    const iconSize = baseIconSize + (sizeCategory - 1) * Math.max(2, Math.round(2 * scaleFactor)); // Bigger for larger Pokemon
+    
+    // Create icon for each status effect
+    character.statusEffects.forEach(effect => {
+        const iconEl = document.createElement('div');
+        iconEl.className = `status-effect-icon ${effect.cssClass}`;
+        iconEl.title = `${effect.name}: ${effect.effect}`;
+        
+        // Base styling
+        iconEl.style.width = `${iconSize}px`;
+        iconEl.style.height = `${iconSize}px`;
+        iconEl.style.borderRadius = '50%';
+        iconEl.style.display = 'flex';
+        iconEl.style.alignItems = 'center';
+        iconEl.style.justifyContent = 'center';
+        iconEl.style.fontSize = `${Math.max(8, Math.round(iconSize * 0.7))}px`;
+        iconEl.style.fontWeight = 'bold';
+        iconEl.style.textShadow = '0 0 2px rgba(0, 0, 0, 0.8)';
+        iconEl.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+        iconEl.style.border = '1px solid rgba(255, 255, 255, 0.3)';
+        iconEl.style.boxShadow = '0 0 3px rgba(0, 0, 0, 0.5)';
+        iconEl.style.transition = 'all 0.2s ease';
+        
+        // Special styling for different status effects
+        switch (effect.id) {
+            case 'poisoned':
+                iconEl.style.backgroundColor = 'rgba(106, 13, 173, 0.8)'; // Purple
+                iconEl.style.color = '#ffffff';
+                iconEl.textContent = effect.htmlSymbol; // ☠
+                break;
+            case 'badly-poisoned':
+                iconEl.style.backgroundColor = 'rgba(75, 0, 130, 0.8)'; // Darker purple
+                iconEl.style.color = '#ffffff';
+                iconEl.textContent = effect.htmlSymbol; // ☠+
+                iconEl.style.fontSize = `${Math.max(6, Math.round(iconSize * 0.5))}px`; // Smaller font for the + symbol
+                break;
+            case 'burned':
+                iconEl.style.backgroundColor = 'rgba(255, 69, 0, 0.8)'; // Orange-red
+                iconEl.style.color = '#ffff00'; // Yellow
+                iconEl.textContent = effect.htmlSymbol; // 🔥
+                break;
+            case 'asleep':
+                iconEl.style.backgroundColor = 'rgba(135, 206, 250, 0.8)'; // Light blue
+                iconEl.style.color = '#ffffff';
+                iconEl.textContent = effect.htmlSymbol; // ☁
+                break;
+            case 'paralyzed':
+                iconEl.style.backgroundColor = 'rgba(255, 215, 0, 0.8)'; // Gold
+                iconEl.style.color = '#000000';
+                iconEl.textContent = effect.htmlSymbol; // ⚡
+                break;
+            case 'frozen':
+                iconEl.style.backgroundColor = 'rgba(176, 224, 230, 0.8)'; // Light cyan
+                iconEl.style.color = '#000080'; // Dark blue
+                iconEl.textContent = effect.htmlSymbol; // ❄
+                break;
+            case 'confused':
+                iconEl.style.backgroundColor = 'rgba(255, 192, 203, 0.8)'; // Light pink
+                iconEl.style.color = '#800080'; // Purple
+                iconEl.textContent = effect.htmlSymbol; // ?
+                break;
+            case 'cursed':
+                iconEl.style.backgroundColor = 'rgba(75, 0, 130, 0.8)'; // Indigo
+                iconEl.style.color = '#ffffff';
+                iconEl.textContent = effect.htmlSymbol; // 👻
+                break;
+            case 'infatuated':
+                iconEl.style.backgroundColor = 'rgba(255, 105, 180, 0.8)'; // Hot pink
+                iconEl.style.color = '#ffffff';
+                iconEl.textContent = effect.htmlSymbol; // ♥
+                break;
+            case 'held':
+                iconEl.style.backgroundColor = 'rgba(105, 105, 105, 0.8)'; // Dim gray
+                iconEl.style.color = '#ffffff';
+                iconEl.textContent = effect.htmlSymbol; // ⚓
+                break;
+            case 'seeded':
+                iconEl.style.backgroundColor = 'rgba(34, 139, 34, 0.8)'; // Forest green
+                iconEl.style.color = '#ffffff';
+                iconEl.textContent = effect.htmlSymbol; // 🌿
+                break;
+            case 'snared':
+                iconEl.style.backgroundColor = 'rgba(139, 69, 19, 0.8)'; // Saddle brown
+                iconEl.style.color = '#ffffff';
+                iconEl.textContent = effect.htmlSymbol; // 🕸️
+                break;
+            default:
+                iconEl.style.backgroundColor = 'rgba(128, 128, 128, 0.8)'; // Default gray
+                iconEl.style.color = '#ffffff';
+                iconEl.textContent = effect.htmlSymbol || '?';
+        }
+        
+        container.appendChild(iconEl);
+    });
+}
+
+/**
+ * Update a specific Pokemon's status icons based on current status effects
+ * @param {string} charId - Character ID
+ */
+export async function updatePokemonStatusIcons(charId) {
+    const sprite = getPokemonSprite(charId);
+    if (!sprite || !sprite.statusIconsContainer) {
+        return;
+    }
+    
+    // Get the character data
+    const characterPositions = await getCharacterPositions();
+    const charData = characterPositions[charId];
+    if (!charData || !charData.character) {
+        return;
+    }
+    
+    // Update the status icons display
+    updatePokemonStatusIconsDisplay(sprite, charData.character);
+}
+
+/**
+ * Update all Pokemon status icons
+ */
+export async function updateAllPokemonStatusIcons() {
+    const characterPositions = await getCharacterPositions();
+    for (const charId in characterPositions) {
+        await updatePokemonStatusIcons(charId);
+    }
+}
+
+/**
  * Update Pokemon sprite position
  * @param {string} charId - Character ID
  * @param {number} newX - New grid X coordinate
@@ -352,6 +560,11 @@ export function updatePokemonPosition(charId, newX, newY) {
     if (sprite.updateHPBar) {
         sprite.updateHPBar();
     }
+    
+    // Update status icons position (this ensures status icons follow the Pokemon)
+    if (sprite.updateStatusIcons) {
+        sprite.updateStatusIcons();
+    }
 }
 
 /**
@@ -361,20 +574,30 @@ export function updatePokemonPosition(charId, newX, newY) {
 export function removePokemonFromOverlay(charId) {
     if (!pokemonOverlayContainer) return;
     
-    // Remove sprite
+    // Remove sprite elements
     const sprite = pokemonOverlayContainer.querySelector(`[data-character-id="${charId}"]`);
     if (sprite) {
         // Also remove the HP bar if it exists
         if (sprite.hpBarContainer && sprite.hpBarContainer.parentNode) {
             sprite.hpBarContainer.remove();
         }
-        sprite.remove();
+        
+        // Also remove the status icons if they exist
+        if (sprite.statusIconsContainer && sprite.statusIconsContainer.parentNode) {
+            sprite.statusIconsContainer.remove();
+        }
     }
     
     // Fallback: Remove HP bar by selector (in case sprite reference is lost)
     const hpBar = pokemonOverlayContainer.querySelector(`.pokemon-hp-bar-container[data-character-id="${charId}"]`);
     if (hpBar) {
         hpBar.remove();
+    }
+    
+    // Fallback: Remove status icons by selector (in case sprite reference is lost)
+    const statusIcons = pokemonOverlayContainer.querySelector(`.pokemon-status-icons-container[data-character-id="${charId}"]`);
+    if (statusIcons) {
+        statusIcons.remove();
     }
 }
 
@@ -435,6 +658,11 @@ export function updateAllPokemonSizes() {
         // Update HP bar position and size
         if (sprite.updateHPBar) {
             sprite.updateHPBar();
+        }
+        
+        // Update status icons position and size
+        if (sprite.updateStatusIcons) {
+            sprite.updateStatusIcons();
         }
     });
 }

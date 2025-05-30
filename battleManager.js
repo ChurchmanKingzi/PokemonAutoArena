@@ -2,29 +2,57 @@ import { logBattleEvent, createBattleLog, resetBattleLog } from './battleLog.js'
 import { displayInitiativeOrder } from './initiativeDisplay.js';
 import { updateBattlefieldDisplay } from './battlefieldGrid.js';
 import { rollInitiativeAndSort } from './initiative.js';
-import { 
-    placeCharacters, 
-    setCharacterPositions,
-    getCharacterPositions,
-    defineTeamAreasWithScaling // Import new scaling function
-} from './characterPositions.js';
+import { placeCharacters, setCharacterPositions, getCharacterPositions, defineTeamAreasWithScaling } from './characterPositions.js';
 import { turn, resetTurn } from './turnSystem.js';
 import { initializeTerrainSystem } from './terrainSystem.js';
 import { resetSwimmingRegistry } from './terrainEffects.js';
 import { initializeCamera, startInitialCameraSequence, resetCamera } from './cameraSystem.js';
 import { initializeMinimapSystem, cleanupMinimapSystem } from './minimapSystem.js';
+import { resetWeather, initializeWeatherSystem, cleanupWeatherSystem } from './weather.js';
+import { resetSandAttackCounter } from './Abilities/sandgewalt.js';
+import { checkAndApplyWeatherAbilities } from './Abilities/weatherAbilities.js';
+import { resetDoubleTurnSystem } from './doubleTurnSystem.js';
+import { removeStrategyBuffs, applyStrategyBuffs } from './utils.js';
+import { forceCompleteAllAttacks } from './turnSystem.js';
+import { resetReactionSystem, forceCompleteAllReactions } from './reactionSystem.js';
 
 /**
- * Updated battle function to initialize both initiative lists
+ * Updated battle function to initialize both initiative lists and reaction system
  */
-export function battle(teamAssignments) {
-    console.log("Battle started!");
-    
+export function battle(teamAssignments) {    
     // Reset battle state
     resetTurn();
     resetBattleLog();
     resetSwimmingRegistry();
+    resetWeather();
+    resetSandAttackCounter();
+    forceCompleteAllAttacks();
     
+    // Reset reaction system for new battle
+    forceCompleteAllReactions();
+    resetReactionSystem();
+
+     // Clear any lingering explosion visual elements from previous battles
+    const battlefield = document.querySelector('.battlefield-grid');
+    if (battlefield) {
+        const explosions = battlefield.querySelectorAll('.explosion-animation');
+        explosions.forEach(explosion => {
+            if (explosion.parentNode) {
+                explosion.parentNode.removeChild(explosion);
+            }
+        });
+        
+        const explosionCones = battlefield.querySelectorAll('.attack-cone.explosion-cone');
+        explosionCones.forEach(cone => {
+            if (cone.parentNode) {
+                cone.parentNode.removeChild(cone);
+            }
+        });
+    }
+
+    // Initialize weather system after the battlefield is created
+    initializeWeatherSystem();
+
     // Create a flat list of all characters with their team info
     const characterList = [];
     const teamCharacters = [];
@@ -105,11 +133,23 @@ export function battle(teamAssignments) {
     
     // Start the initial camera sequence, then begin the first turn
     // Pass the FINAL team areas to the camera
-    startInitialCameraSequence(teamAreas).then(() => {
+    startInitialCameraSequence(teamAreas).then(async () => {
         // Log who goes first
         if (sortedCharacters.length > 0) {
             const firstCharacter = sortedCharacters[0];
             logBattleEvent(`${firstCharacter.character.name} will have the first turn!`);
+        }
+        
+        // Apply trainer class effects before the first turn begins
+        try {
+            // Import and call startOfTurnClassCheck
+            const classManager = await import('./classManager.js');
+            await classManager.startOfTurnClassCheck();
+            
+            // Dürre, Niesel und co
+            await checkAndApplyWeatherAbilities();
+        } catch (error) {
+            console.error('Error applying initial trainer class effects or Pokemon weather abilities:', error);
         }
         
         // Start the first turn
@@ -122,16 +162,33 @@ export function battle(teamAssignments) {
 }
 
 /**
- * Reset character battle-specific properties
+ * Reset character battle-specific properties WITHOUT touching combat stats
  * @param {Object} character - Character to reset
  */
 function resetCharacterBattleState(character) {
-    // Reset current KP to max KP
+    // IMPORTANT: Store current combat stats to ensure they're not accidentally modified
+    const originalCombatStats = character.combatStats ? { ...character.combatStats } : null;
+    const originalStatsDetails = character.statsDetails ? {
+        ...character.statsDetails,
+        statsGerman: character.statsDetails.statsGerman ? { ...character.statsDetails.statsGerman } : null
+    } : null;
+    
+    // Reset current KP to max KP (this is the only stat modification we want)
     if (character.maxKP) {
         character.currentKP = character.maxKP;
     } else if (character.combatStats && character.combatStats.kp) {
         character.currentKP = character.combatStats.kp;
         character.maxKP = character.combatStats.kp;
+    }
+
+    // Re-apply strategy buffs based on current strategy setting SYNCHRONOUSLY
+    // First remove any existing strategy buffs
+    if (character.hasStrategyBuffs) {
+        removeStrategyBuffs(character);
+        // Then apply the current strategy buffs
+        if (character.strategy) {
+            applyStrategyBuffs(character, character.strategy);
+        }
     }
     
     // Reset the new status effects array
@@ -155,139 +212,38 @@ function resetCharacterBattleState(character) {
         });
     }
     
-    return character;
-}
-
-/**
- * Reset all battle state
- * This function is called when returning to the character selection screen
- */
-export function resetBattle() {
-    // Reset turn state
-    resetTurn();
-    
-    // Reset battle log
-    resetBattleLog();
-
-    // Reset camera
-    resetCamera();
-    
-    // Clean up minimap system
-    cleanupMinimapSystem();
-    
-    // Reset swimming registry
-    resetSwimmingRegistry();
-    
-    // Get character positions before clearing them to reset stats
-    const characterPositions = getCharacterPositions();
-    const allCharacters = [];
-    for (const charId in characterPositions) {
-        if (characterPositions[charId].character) {
-            allCharacters.push(characterPositions[charId].character);
-        }
-    }
-    
-    // Clear all projectiles using the dedicated function
-    try {
-        import('./projectileSystem.js').then(module => {
-            if (module.clearAllProjectiles) {
-                module.clearAllProjectiles();
+    // MODIFIED SAFETY CHECK: Exclude strategy-affected stats from restoration
+    if (originalCombatStats) {
+        // Get the stats that might be affected by strategy buffs
+        const strategyAffectedStats = new Set(['bw', 'pa', 'gena', 'angriff', 'verteidigung', 'spAngriff', 'spVerteidigung']);
+        
+        // Restore all combat stats except currentKP, maxKP, and strategy-affected stats
+        Object.keys(originalCombatStats).forEach(key => {
+            if (key !== 'currentKP' && key !== 'maxKP' && !strategyAffectedStats.has(key)) {
+                character.combatStats[key] = originalCombatStats[key];
             }
-        }).catch(error => {
-            console.error("Error clearing projectiles:", error);
         });
-    } catch (error) {
-        console.error("Error importing projectileSystem:", error);
     }
     
-    // Reset all character stat modifications
-    try {
-        import('./statChanges.js').then(module => {
-            if (module.resetStatModifications) {
-                allCharacters.forEach(character => {
-                    module.resetStatModifications(character);
+    // MODIFIED SAFETY CHECK: Exclude strategy-affected stats from restoration  
+    if (originalStatsDetails && character.statsDetails) {
+        Object.keys(originalStatsDetails).forEach(key => {
+            if (key === 'statsGerman' && originalStatsDetails.statsGerman) {
+                // Only restore stats that aren't affected by strategy buffs
+                const strategyAffectedGermanStats = new Set([
+                    'Angriff', 'Verteidigung', 'Spezial-Angriff', 'Spezial-Verteidigung'
+                ]);
+                
+                Object.keys(originalStatsDetails.statsGerman).forEach(statKey => {
+                    if (!strategyAffectedGermanStats.has(statKey)) {
+                        character.statsDetails.statsGerman[statKey] = originalStatsDetails.statsGerman[statKey];
+                    }
                 });
-            }
-        }).catch(error => {
-            console.error("Error resetting stat modifications:", error);
-        });
-    } catch (error) {
-        console.error("Error importing statChanges:", error);
-    }
-    
-    // Clear battlefield grid
-    const battlefieldGrid = document.querySelector('.battlefield-grid');
-    if (battlefieldGrid) {
-        battlefieldGrid.remove();
-    }
-    
-    // Remove initiative display
-    const initiativeOrder = document.querySelector('.initiative-order');
-    if (initiativeOrder) {
-        initiativeOrder.remove();
-    }
-    
-    // Remove battle log
-    const battleLog = document.querySelector('.battle-log-container');
-    if (battleLog) {
-        battleLog.remove();
-    }
-    
-    // Reset character positions
-    setCharacterPositions({});
-    
-    // Remove any active character highlighting
-    const activeCharacters = document.querySelectorAll('.battlefield-character.active');
-    activeCharacters.forEach(char => {
-        char.classList.remove('active');
-    });
-    
-    // Clean up any other DOM elements created during battle
-    const damageNumbers = document.querySelectorAll('.damage-number');
-    damageNumbers.forEach(el => el.remove());
-    
-    const projectiles = document.querySelectorAll('.projectile');
-    projectiles.forEach(el => el.remove());
-    
-    const impactEffects = document.querySelectorAll('.impact-effect');
-    impactEffects.forEach(el => el.remove());
-    
-    // NEW: Clean up ALL possible animation elements
-    const animationElements = [
-        '.dodge-animation-wrapper',
-        '.melee-attack-animation-wrapper',
-        '.projectile',
-        '.impact-effect',
-        '.status-effect-indicator',
-        '.stat-boost-bounce',
-        '.stat-arrow',
-        '.cone-indicator',
-        '.area-effect-particle',
-        '.animation-wrapper',
-        '.giftpuder',
-        '.stachelspore',
-        '.schlafpuder',
-        '.sandwirbel',
-        '.rankenhieb',
-        '.glut',
-        '.aquaknarre',
-        '.donnerschock',
-        '.steinwurf'
-    ];
-    
-    animationElements.forEach(selector => {
-        document.querySelectorAll(selector).forEach(el => {
-            if (el.parentNode) {
-                el.parentNode.removeChild(el);
+            } else {
+                character.statsDetails[key] = originalStatsDetails[key];
             }
         });
-    });
-    
-    // Clear any timers or intervals
-    const highestTimeoutId = setTimeout(() => {}, 0);
-    for (let i = 0; i < highestTimeoutId; i++) {
-        clearTimeout(i);
     }
     
-    console.log("Battle state has been completely reset");
+    return character;
 }

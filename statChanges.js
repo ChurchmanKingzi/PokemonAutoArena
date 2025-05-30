@@ -151,13 +151,14 @@ function extractPokemonStats(pokemon) {
 
 /**
  * Apply a stat change to a Pokémon
+ * Now uses centralized initiative system when initiative is modified
  * @param {Object} pokemon - The Pokémon to modify
  * @param {string} statName - The name of the stat to modify
  * @param {number} stageChange - The number of stages to change (positive for increase, negative for decrease)
  * @param {Object} source - Source of the stat change (null for self)
  * @returns {Object} - Result of the operation
  */
-export function changeStatValue(pokemon, statName, stageChange, source = null) {
+export async function changeStatValue(pokemon, statName, stageChange, source = null) {
     if (!pokemon || !pokemon.uniqueId) {
         return { success: false, message: "Ungültiges Pokémon" };
     }
@@ -311,22 +312,86 @@ export function changeStatValue(pokemon, statName, stageChange, source = null) {
         });
     }
     
-    // Trigger initiative recalculation if initiative was changed
-    if (normalizedStatName === 'init') {
-        import('./initiativeChanges.js').then(module => {
-            // The initiative value recalculation is handled by the turn system directly
-            const result = module.changeInitiative(pokemon.uniqueId, newValue - originalValue, 
-                stageChange > 0 ? "Initiative erhöht" : "Initiative gesenkt");
-            
-            // If this should result in an immediate turn, trigger it
-            if (result.shouldTakeTurnNow) {
-                import('./turnSystem.js').then(tsModule => {
-                    tsModule.triggerImmediateTurn(pokemon.uniqueId);
-                });
-            }
+    // Animate the stat change if it was effective
+    if (isStageBasedStat && effectiveStageChange !== 0 || !isStageBasedStat && stageChange !== 0) {
+        // Use dynamic import to avoid circular dependency
+        import('./animationManager.js').then(module => {
+            module.animateStatBoost(pokemon.uniqueId, normalizedStatName, 
+                isStageBasedStat ? effectiveStageChange : stageChange,
+                () => console.log("Animation complete for", pokemon.name, normalizedStatName));
         }).catch(error => {
-            console.error("Error updating initiative:", error);
+            console.error("Error animating stat boost:", error);
         });
+    }
+    
+    // **CRITICAL CHANGE**: Use centralized initiative system when initiative is modified
+    if (normalizedStatName === 'init') {
+        try {
+            console.log(`[StatChanges] Initiative stat changed for ${pokemon.name}: ${originalValue} → ${newValue}`);
+            
+            // Import the centralized initiative system
+            const { updatePokemonInitiative, getSortedCharacters, getSortedCharactersDisplay } = await import('./initiative.js');
+            
+            // Find this Pokemon in the initiative lists to get current rolled initiative
+            const characters = getSortedCharacters();
+            const displayCharacters = getSortedCharactersDisplay();
+            
+            const characterEntry = characters.find(entry => 
+                entry.character && entry.character.uniqueId === pokemon.uniqueId
+            );
+            
+            const displayEntry = displayCharacters.find(entry => 
+                entry.character && entry.character.uniqueId === pokemon.uniqueId
+            );
+            
+            if (characterEntry) {
+                // Store original roll if not already stored
+                if (!characterEntry.originalInitiativeRoll) {
+                    characterEntry.originalInitiativeRoll = characterEntry.initiativeRoll;
+                }
+                
+                // Calculate new initiative roll based on stat multiplier
+                const statMultiplier = newValue / originalValue;
+                const newRoll = Math.max(1, Math.round(characterEntry.originalInitiativeRoll * statMultiplier));
+                
+                // Store stage info for tracking
+                if (!characterEntry.initiativeStage) {
+                    characterEntry.initiativeStage = 0;
+                }
+                characterEntry.initiativeStage = stages[normalizedStatName]; // Use the current stage
+                
+                // Also update display entry if it exists
+                if (displayEntry) {
+                    if (!displayEntry.originalInitiativeRoll) {
+                        displayEntry.originalInitiativeRoll = displayEntry.initiativeRoll;
+                    }
+                    
+                    if (!displayEntry.initiativeStage) {
+                        displayEntry.initiativeStage = 0;
+                    }
+                    displayEntry.initiativeStage = stages[normalizedStatName];
+                }
+                
+                // Use the centralized system to update initiative
+                // This will automatically handle:
+                // - Updating both logic and display lists
+                // - Re-sorting initiative order
+                // - Recalculating double turns  ← This is the key fix!
+                // - Updating the display
+                await updatePokemonInitiative(
+                    pokemon.uniqueId, 
+                    newRoll, 
+                    `Stat Change: ${statDisplayNames[normalizedStatName]}`,
+                    false // Don't preserve original since we're handling it manually
+                );
+                
+                console.log(`[StatChanges] Used centralized system to update initiative: ${characterEntry.initiativeRoll} → ${newRoll}`);
+            } else {
+                console.warn(`[StatChanges] Pokemon ${pokemon.name} not found in initiative lists`);
+            }
+        } catch (error) {
+            console.error("Error updating initiative through centralized system:", error);
+        }
     }
     
     return { 
@@ -541,17 +606,48 @@ export function getStatStages(pokemon) {
  * Reset all stat modifications for a Pokémon
  * @param {Object} pokemon - The Pokémon to reset
  */
-export function resetStatModifications(pokemon) {
+export async function resetStatModifications(pokemon) {
     if (!pokemon || !pokemon.uniqueId) return;
+    
+    // Check if initiative needs to be reset
+    const stages = statStages.get(pokemon.uniqueId);
+    const hasInitiativeModification = stages && stages.init !== 0;
     
     // Reset modification history
     statModifications.set(pokemon.uniqueId, new Map());
     
     // Reset stages to 0
-    const stages = statStages.get(pokemon.uniqueId);
     if (stages) {
         for (const stat in stages) {
             stages[stat] = 0;
+        }
+    }
+    
+    // If initiative was modified, use centralized system to reset it
+    if (hasInitiativeModification) {
+        try {
+            const { updatePokemonInitiative, getSortedCharacters } = await import('./initiative.js');
+            
+            // Find the Pokemon in initiative list
+            const characters = getSortedCharacters();
+            const characterEntry = characters.find(entry => 
+                entry.character && entry.character.uniqueId === pokemon.uniqueId
+            );
+            
+            if (characterEntry && characterEntry.originalInitiativeRoll) {
+                // Reset to original rolled value
+                await updatePokemonInitiative(
+                    pokemon.uniqueId,
+                    characterEntry.originalInitiativeRoll,
+                    'Stat Reset'
+                );
+                
+                // Clean up stored original value
+                delete characterEntry.originalInitiativeRoll;
+                delete characterEntry.initiativeStage;
+            }
+        } catch (error) {
+            console.error("Error resetting initiative through centralized system:", error);
         }
     }
     

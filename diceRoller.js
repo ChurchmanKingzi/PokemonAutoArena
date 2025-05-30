@@ -30,7 +30,7 @@ export function rollMultipleD6(count) {
  */
 export function rollAttackDice(diceCount) {
     // Default to 1 die if not specified or invalid
-    const count = (!diceCount || diceCount < 1) ? 1 : diceCount;
+    const count = (!diceCount || diceCount < 1) ? 0 : diceCount;
     
     // Roll the dice
     const rolls = [];
@@ -96,7 +96,7 @@ export function forcedRoll(diceCount, forcedCount, forcingMode = 'always', isLuc
  */
 export function rollDamageWithValue(damageValue) {
     // Ensure damage value is at least 1
-    const diceCount = Math.max(1, damageValue);
+    const diceCount = Math.max(0, damageValue);
     
     // Roll N dice where N is the damage value
     const rolls = [];

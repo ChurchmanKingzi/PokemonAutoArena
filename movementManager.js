@@ -3,6 +3,7 @@
  */
 
 import { movePokemonByStrategy, calculateMovementRange } from './MovementSystem.js';
+import { hasStatusEffect } from './statusEffects.js';
 import { logBattleEvent } from './battleLog.js';
 import { getCharacterPositions } from './characterPositions.js';
 
@@ -14,11 +15,6 @@ export function initializeMovementSystem() {
     logBattleEvent("Bewegungssystem initialisiert.");
 }
 
-/**
- * Handle movement for a character's turn
- * @param {string} charId - Character ID
- * @returns {Promise<Object>} - Result of the movement
- */
 export async function handleCharacterMovement(charId) {
     const positions = getCharacterPositions();
     const pokemonData = positions[charId];
@@ -31,6 +27,29 @@ export async function handleCharacterMovement(charId) {
     if (pokemonData.isDefeated) {
         logBattleEvent(`${pokemonData.character.name} ist besiegt und kann sich nicht bewegen.`);
         return { success: false, message: "Character is defeated" };
+    }
+    
+    // Check for status effects that prevent movement
+    if (hasStatusEffect(pokemonData.character, 'frozen')) {
+        logBattleEvent(`${pokemonData.character.name} ist eingefroren und kann sich nicht bewegen.`);
+        return { success: true, moved: false, message: "Frozen" };
+    }
+    
+    if (hasStatusEffect(pokemonData.character, 'asleep')) {
+        logBattleEvent(`${pokemonData.character.name} schläft und kann sich nicht bewegen.`);
+        return { success: true, moved: false, message: "Asleep" };
+    }
+    
+    // Check for the snared status effect (Fadenschuss)
+    if (hasStatusEffect(pokemonData.character, 'snared')) {
+        logBattleEvent(`${pokemonData.character.name} ist verstrickt und kann sich nicht bewegen.`);
+        return { success: true, moved: false, message: "Snared" };
+    }
+    
+    // Check for held status
+    if (hasStatusEffect(pokemonData.character, 'held')) {
+        logBattleEvent(`${pokemonData.character.name} wird festgehalten und kann sich nicht bewegen.`);
+        return { success: true, moved: false, message: "Held" };
     }
     
     try {
@@ -153,4 +172,36 @@ export function mapCharacterMovementRanges() {
     }
     
     return movementMap;
+}
+
+/**
+ * Check if a Pokémon can move based on its status effects
+ * @param {Object} pokemon - The Pokémon to check
+ * @returns {Object} - Result with success flag and reason if can't move
+ */
+export function canPokemonMove(pokemon) {
+    if (!pokemon) {
+        return { canMove: false, reason: "No Pokémon data" };
+    }
+    
+    // Check for status effects that prevent movement
+    if (hasStatusEffect(pokemon, 'frozen')) {
+        return { canMove: false, reason: "eingefroren" };
+    }
+    
+    if (hasStatusEffect(pokemon, 'asleep')) {
+        return { canMove: false, reason: "schlafend" };
+    }
+    
+    // Check for the snared status effect from Fadenschuss
+    if (hasStatusEffect(pokemon, 'snared')) {
+        return { canMove: false, reason: "verstrickt" };
+    }
+    
+    // Check for any other effects that prevent movement
+    if (hasStatusEffect(pokemon, 'held')) {
+        return { canMove: false, reason: "festgehalten" };
+    }
+    
+    return { canMove: true };
 }

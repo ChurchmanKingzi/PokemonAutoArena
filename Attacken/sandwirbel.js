@@ -4,16 +4,11 @@
  */
 
 import { TILE_SIZE } from '../config.js';
-import { logBattleEvent } from '../battleLog.js';
-import { changeStatValue } from '../statChanges.js';
 import { hasPokemonAbility } from '../statusEffects.js';
 import { getCurrentStatValue } from '../statChanges.js';
-import { 
-    createConeIndicator, 
-    removeConeIndicator, 
-    findCharactersInCone,
-    isPositionInCone 
-} from '../attackCone.js';
+import { createConeIndicator, removeConeIndicator, findCharactersInCone,isPositionInCone } from '../attackCone.js';
+import { applyVisualHitEffect } from '../coneHits.js';
+import { changeStatValue } from '../statChanges.js';
 
 // Constants
 const DEFAULT_CONE_ANGLE = 60; // The angle of the Sandwirbel cone in degrees
@@ -54,6 +49,20 @@ export class SandwirbelAttack {
         this.creationTime = Date.now();
         this.effectApplied = false;
         
+        // Handle miss case - calculate a new direction
+        if (!this.isHit) {
+            // Display miss message over the original target
+            import('../damageNumbers.js').then(module => {
+                module.createMissMessage(this.target);
+            });
+            
+            // Calculate effective target direction (missed angle)
+            this.effectiveTarget = this.calculateMissDirection();
+        } else {
+            // If hit, use the original target direction
+            this.effectiveTarget = this.target;
+        }
+        
         // Create the cone and particles
         this.createVisualElements();
         
@@ -64,15 +73,53 @@ export class SandwirbelAttack {
         this.effectTimeout = setTimeout(() => this.applyGENAReduction(), EFFECT_DURATION - 100);
         this.destroyTimeout = setTimeout(() => this.destroy(), EFFECT_DURATION);
     }
-    
+
     /**
+     * Calculate a random direction for a missed cone attack
+     * that ensures the original target is NOT in the cone
+     * @returns {Object} - New target direction {x, y}
+     */
+    calculateMissDirection() {
+        // Original direction vector from attacker to target
+        const dx = this.target.x - this.attacker.x;
+        const dy = this.target.y - this.attacker.y;
+        const originalDistance = Math.sqrt(dx * dx + dy * dy);
+        
+        // Original angle (in radians)
+        const originalAngle = Math.atan2(dy, dx);
+        
+        // Cone half-angle in radians
+        const coneHalfAngle = (this.coneAngle / 2) * (Math.PI / 180);
+        
+        // Generate a random angle that's outside the cone angle
+        // to ensure the original target is NOT in the new cone
+        let offsetAngle;
+        if (Math.random() < 0.5) {
+            // Miss to the left
+            offsetAngle = coneHalfAngle + (Math.random() * Math.PI / 4); // 0-45 degrees outside cone
+        } else {
+            // Miss to the right
+            offsetAngle = -coneHalfAngle - (Math.random() * Math.PI / 4); // 0-45 degrees outside cone
+        }
+        
+        // Calculate new direction
+        const newAngle = originalAngle + offsetAngle;
+        
+        // Calculate new target position at the same distance
+        const newX = this.attacker.x + Math.cos(newAngle) * originalDistance;
+        const newY = this.attacker.y + Math.sin(newAngle) * originalDistance;
+        
+        return { x: newX, y: newY };
+    }
+    
+     /**
      * Create the visual elements for sand attack
      */
     createVisualElements() {
-        // First create the cone indicator
+        // Create the cone indicator with the effective target direction
         this.coneElement = createConeIndicator(
             this.attacker, 
-            this.target, 
+            this.effectiveTarget, // Use the calculated direction
             this.range, 
             this.coneAngle, 
             'sandwirbel',
@@ -150,7 +197,7 @@ export class SandwirbelAttack {
      */
     getRandomPositionInCone() {
         const attacker = this.attacker;
-        const targetDirection = this.target;
+        const targetDirection = this.effectiveTarget;
         const range = this.range;
         
         // Try random positions until we find one in the cone
@@ -197,7 +244,7 @@ export class SandwirbelAttack {
         // Get all characters in the cone
         const charactersInCone = findCharactersInCone(
             this.attacker, 
-            this.target, 
+            this.effectiveTarget,
             this.range, 
             this.coneAngle
         );
@@ -270,42 +317,9 @@ export class SandwirbelAttack {
      */
     applyGENAReduction() {
         if (this.effectApplied || this.removed) return;
-        
+    
         // Mark effect as applied
         this.effectApplied = true;
-        
-        // Find valid targets
-        const validTargets = this.findValidTargets();
-        
-        // Apply GENA reduction to each valid target
-        let successfulTargets = 0;
-        validTargets.forEach(target => {
-            const result = changeStatValue(
-                target.character, 
-                'gena', 
-                -1, // Reduce GENA by 1
-                this.attacker.character // Source of the effect
-            );
-            
-            if (result.success) {
-                // Apply visual flash effect to the target
-                this.applySandFlashEffect(target.id);
-                successfulTargets++;
-            } else if (result.prevented && result.ability) {
-                // Log that the ability prevented the stat reduction
-                logBattleEvent(result.message);
-            } else if (result.atMinimum) {
-                // Log that the stat is already at minimum
-                logBattleEvent(result.message);
-            }
-        });
-        
-        // Log the attack result
-        if (successfulTargets > 0) {
-            logBattleEvent(`${this.attacker.character.name}'s Sandwirbel senkt die Genauigkeit von ${successfulTargets} Pokémon!`);
-        } else if (validTargets.length === 0) {
-            logBattleEvent(`Sandwirbel von ${this.attacker.character.name} hat keine Wirkung!`);
-        }
     }
     
     /**
@@ -431,6 +445,20 @@ export function addSandwirbelStyles() {
             pointer-events: none;
         }
         
+        /* Ensure the SVG container has no background or border */
+        .attack-cone.sandwirbel-cone {
+            background: none !important;
+            border: none !important;
+        }
+        
+        /* Style for Sandwirbel cone - target only path and circle elements */
+        .attack-cone.sandwirbel-cone path,
+        .attack-cone.sandwirbel-cone circle {
+            fill: rgba(210, 180, 140, 0.3);
+            stroke: rgba(210, 180, 140, 0.6);
+            animation: sandwirbel-path-pulse 1.5s infinite;
+        }
+        
         /* Floating animation for particles */
         @keyframes sandwirbelFloat {
             0% {
@@ -459,25 +487,19 @@ export function addSandwirbelStyles() {
             animation: sandFlash 0.5s ease-in-out forwards;
         }
         
-        /* Style for Sandwirbel cone */
-        .attack-cone.sandwirbel-cone {
-            background-color: rgba(210, 180, 140, 0.25);
-            border: 1px solid rgba(210, 180, 140, 0.5);
-            animation: sandwirbel-cone-pulse 1.5s infinite;
-        }
-        
-        @keyframes sandwirbel-cone-pulse {
+        /* Updated animation for path and circle elements (not the container) */
+        @keyframes sandwirbel-path-pulse {
             0% { 
-                background-color: rgba(210, 180, 140, 0.2);
-                border-color: rgba(210, 180, 140, 0.4);
+                fill: rgba(210, 180, 140, 0.2);
+                stroke: rgba(210, 180, 140, 0.4);
             }
             50% { 
-                background-color: rgba(210, 180, 140, 0.3);
-                border-color: rgba(210, 180, 140, 0.6);
+                fill: rgba(210, 180, 140, 0.3);
+                stroke: rgba(210, 180, 140, 0.6);
             }
             100% { 
-                background-color: rgba(210, 180, 140, 0.2);
-                border-color: rgba(210, 180, 140, 0.4);
+                fill: rgba(210, 180, 140, 0.2);
+                stroke: rgba(210, 180, 140, 0.4);
             }
         }
     `;
@@ -535,4 +557,36 @@ export function isValidSandwirbelTarget(target) {
     }
     
     return true;
+}
+
+/**
+ * Apply Sandwirbel effects (GENA reduction)
+ */
+export function applySandwirbelEffects(attacker, validTargets, attack, results) {
+    let successfulTargets = 0;
+    
+    validTargets.forEach(target => {
+        const result = changeStatValue(target.character, 'gena', -1, attacker.character);
+        
+        if (result.success) {
+            successfulTargets++;
+            applyVisualHitEffect(target.id, 'sand');
+            
+            results.effects.push({
+                targetId: target.id,
+                type: 'stat',
+                statChange: { stat: 'gena', change: -1 }
+            });
+        } else if (result.prevented && result.ability) {
+            results.messages.push(result.message);
+        } else if (result.atMinimum) {
+            results.messages.push(result.message);
+        }
+    });
+    
+    if (successfulTargets > 0) {
+        results.messages.push(`${attacker.character.name}'s Sandwirbel senkt die Genauigkeit von ${successfulTargets} Pokémon!`);
+    } else if (validTargets.length === 0) {
+        results.messages.push(`Sandwirbel von ${attacker.character.name} hat keine Wirkung!`);
+    }
 }

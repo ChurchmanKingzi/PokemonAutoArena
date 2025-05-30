@@ -1,8 +1,8 @@
 /**
  * Initiative changes module - handles modifications to initiative during battle
+ * Updated to use the centralized initiative management system
  */
-import { getSortedCharacters, setSortedCharacters } from './initiative.js';
-import { displayInitiativeOrder } from './initiativeDisplay.js';
+import { getSortedCharacters, updatePokemonInitiative } from './initiative.js';
 import { logBattleEvent } from './battleLog.js';
 import { getCurrentTurn } from './turnSystem.js';
 
@@ -34,13 +34,15 @@ export function hasTakenTurn(pokemonId) {
 }
 
 /**
- * Apply an initiative change to a specific Pokémon
+ * Apply an initiative change to a specific Pokémon using stage-based system
+ * Now uses the centralized initiative management system
+ * 
  * @param {string} pokemonId - Unique ID of the affected Pokémon
- * @param {number} modifier - Value to add to or subtract from initiative (negative for reduction)
+ * @param {number} stageChange - Number of stages to change (-6 to +6)
  * @param {string} reason - Reason for the initiative change (for logging)
  * @returns {Object} Information about the initiative change including any turn effects
  */
-export function changeInitiative(pokemonId, modifier, reason) {
+export async function changeInitiative(pokemonId, stageChange, reason) {
     // Get current sorted characters
     const characters = getSortedCharacters();
     const currentTurn = getCurrentTurn();
@@ -61,41 +63,73 @@ export function changeInitiative(pokemonId, modifier, reason) {
     // Get the Pokémon
     const pokemon = characters[characterIndex];
     
-    // Store original roll and apply the change
+    // Store original roll and position
     const originalRoll = pokemon.initiativeRoll;
-    pokemon.initiativeRoll = Math.max(1, pokemon.initiativeRoll + modifier); // Ensure minimum of 1
-    
-    // Log the change
-    let logMessage = `${pokemon.character.name}'s Initiative wurde`;
-    
-    if (modifier > 0) {
-        logMessage += ` erhöht von ${originalRoll} auf ${pokemon.initiativeRoll}`;
-    } else if (modifier < 0) {
-        logMessage += ` verringert von ${originalRoll} auf ${pokemon.initiativeRoll}`;
-    } else {
-        return { success: false, message: "Keine Initiative-Änderung" }; // No change, no effect
-    }
-    
-    if (reason) {
-        logMessage += ` (${reason})`;
-    }
-    
-    logBattleEvent(logMessage);
-    
-    // Save original position to compare later
     const originalPosition = characterIndex;
+
+    // Define stage multipliers - same as in statChanges.js
+    const stageMultipliers = {
+        "-6": 0.25, "-5": 0.28, "-4": 0.33, "-3": 0.4, "-2": 0.5, "-1": 0.67,
+        "0": 1,
+        "1": 1.5, "2": 2, "3": 2.5, "4": 3, "5": 3.5, "6": 4
+    };
+
+    // Initialize or get current initiative stage
+    if (!pokemon.initiativeStage) {
+        pokemon.initiativeStage = 0;
+    }
     
-    // Re-sort based on initiative
-    characters.sort((a, b) => b.initiativeRoll - a.initiativeRoll);
+    // Calculate new stage value, clamped to -6 to +6
+    const newStage = Math.max(-6, Math.min(6, pokemon.initiativeStage + stageChange));
     
-    // Store the new sorted order
-    setSortedCharacters(characters);
+    // If no stage change, don't do anything
+    if (newStage === pokemon.initiativeStage) {
+        return { 
+            success: false, 
+            message: stageChange > 0 
+                ? `${pokemon.character.name}'s Initiative kann nicht weiter erhöht werden.`
+                : `${pokemon.character.name}'s Initiative kann nicht weiter gesenkt werden.`
+        };
+    }
     
-    // Update the initiative display
-    displayInitiativeOrder(characters);
+    // Get original base initiative (before any stage modifiers)
+    // If not stored, current value is assumed to be the base
+    if (!pokemon.originalInitiativeRoll) {
+        // This is the first change, save the original value
+        pokemon.originalInitiativeRoll = originalRoll;
+    }
     
-    // Find where the Pokémon ended up
-    const newPosition = characters.findIndex(
+    // Calculate new initiative based on original value and new stage multiplier
+    const baseInitiative = pokemon.originalInitiativeRoll;
+    const stageMultiplier = stageMultipliers[newStage.toString()];
+    const newInitiativeValue = Math.max(1, Math.round(baseInitiative * stageMultiplier));
+    
+    // Store the new stage value
+    pokemon.initiativeStage = newStage;
+    
+    // Use the centralized initiative update system
+    // This will automatically handle:
+    // - Updating both logic and display lists
+    // - Re-sorting initiative order
+    // - Recalculating double turns  ← This is the key fix!
+    // - Updating the display
+    const updateResult = await updatePokemonInitiative(
+        pokemonId, 
+        newInitiativeValue, 
+        reason,
+        false // Don't preserve original since we're handling it manually
+    );
+    
+    if (!updateResult.success) {
+        return { 
+            success: false, 
+            message: `Fehler beim Aktualisieren der Initiative: ${updateResult.message}` 
+        };
+    }
+    
+    // Find where the Pokémon ended up after the centralized update
+    const updatedCharacters = getSortedCharacters();
+    const newPosition = updatedCharacters.findIndex(
         entry => entry.character && entry.character.uniqueId === pokemonId
     );
     
@@ -103,30 +137,28 @@ export function changeInitiative(pokemonId, modifier, reason) {
     const result = {
         success: true,
         originalRoll,
-        newRoll: pokemon.initiativeRoll,
+        newRoll: newInitiativeValue,
         originalPosition,
         newPosition,
         pokemonId,
         pokemonName: pokemon.character.name,
         shouldSkip: false,
-        shouldTakeTurnNow: false
+        shouldTakeTurnNow: false,
+        stageChange: newStage - (pokemon.initiativeStage - stageChange), // Actual stage change applied
+        newStage: newStage
     };
     
     // Handle turn order effects:
-    
     // Case 1: Pokémon has taken its turn but got slower (newPosition > turnPosition)
-    // Should be skipped if it would get another turn this round
     if (hasTakenTurnAlready && newPosition > turnPosition) {
         // Should skip its turn this round
         pokemon.character.skipTurnThisRound = true;
         result.shouldSkip = true;
         
-        // No log message for silently skipping
+        logBattleEvent(`${pokemon.character.name} verliert durch die Initiative-Änderung den restlichen Zug dieser Runde!`);
     }
     
     // Case 2: Pokémon hasn't taken its turn but got faster (newPosition < turnPosition)
-    // If it's now BEFORE the current turn position but was originally AFTER,
-    // it would have been skipped this round, so give it an immediate turn
     if (!hasTakenTurnAlready && newPosition < turnPosition && originalPosition > turnPosition) {
         result.shouldTakeTurnNow = true;
         
@@ -134,35 +166,18 @@ export function changeInitiative(pokemonId, modifier, reason) {
         logBattleEvent(`${pokemon.character.name} erhält durch die Initiative-Änderung einen sofortigen Zug!`);
     }
     
+    console.log(`[InitiativeChanges] Successfully updated ${pokemon.character.name}'s initiative using centralized system`);
+    
     return result;
 }
 
 /**
- * Apply a paralysis initiative effect (halves the initiative)
+ * Apply a paralysis initiative effect (reduces initiative by 2 stages)
  * @param {string} pokemonId - Unique ID of the paralyzed Pokémon
  * @returns {Object} Result of the initiative change
  */
-export function applyParalysisInitiativeEffect(pokemonId) {
-    // Get current sorted characters
-    const characters = getSortedCharacters();
-    
-    // Find the paralyzed Pokémon
-    const characterIndex = characters.findIndex(
-        entry => entry.character && entry.character.uniqueId === pokemonId
-    );
-    
-    if (characterIndex === -1) return { success: false, message: "Pokémon nicht gefunden" };
-    
-    // Get the Pokémon
-    const pokemon = characters[characterIndex];
-    
-    // Calculate the modifier to halve their initiative
-    const currentRoll = pokemon.initiativeRoll;
-    const newRoll = Math.floor(currentRoll / 2);
-    const modifier = newRoll - currentRoll; // This will be negative
-    
-    // Apply the initiative change
-    return changeInitiative(pokemonId, modifier, "Paralyse");
+export async function applyParalysisInitiativeEffect(pokemonId) {
+    return await changeInitiative(pokemonId, -2, "Paralyse");
 }
 
 /**
@@ -199,4 +214,50 @@ export function triggerImmediateTurn(pokemonId) {
     if (character) {
         character.character.takeTurnImmediately = true;
     }
+}
+
+/**
+ * Check if all living Pokemon have taken their turn this round
+ * @returns {boolean} - Whether all living Pokemon have taken their turn
+ */
+export function allPokemonHaveTakenTurn() {
+    const characters = getSortedCharacters();
+    
+    // Check if all characters have taken their turn
+    return characters.every(entry => hasTakenTurn(entry.character.uniqueId));
+}
+
+/**
+ * Get the next Pokemon that should take their turn (hasn't taken turn yet)
+ * @returns {Object|null} - Next character entry or null if all have taken their turn
+ */
+export function getNextPokemonForTurn() {
+    const characters = getSortedCharacters();
+    
+    // Find the first character in initiative order that hasn't taken their turn
+    for (const character of characters) {
+        if (!hasTakenTurn(character.character.uniqueId)) {
+            return character;
+        }
+    }
+    
+    return null; // All have taken their turn
+}
+
+/**
+ * Get remaining Pokemon count that haven't taken their turn this round
+ * @returns {number} - Number of Pokemon that still need to act this round
+ */
+export function getRemainingTurnsThisRound() {
+    const characters = getSortedCharacters();
+    
+    return characters.filter(entry => !hasTakenTurn(entry.character.uniqueId)).length;
+}
+
+/**
+ * Check if a new round should start based on turn completion
+ * @returns {boolean} - Whether a new round should start
+ */
+export function shouldStartNewRound() {
+    return allPokemonHaveTakenTurn();
 }

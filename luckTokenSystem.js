@@ -3,7 +3,6 @@
  */
 
 import { rollAttackDice } from './diceRoller.js';
-import { logBattleEvent } from './battleLog.js';
 import { getCharacterPositions } from './characterPositions.js';
 import { TILE_SIZE } from './config.js';
 

@@ -3434,3 +3434,954 @@ h1 {
     box-shadow: 0 0 8px rgba(46, 204, 113, 0.4);
   }
 }
+
+.status-snared {
+    background-color: #c5e04a;
+    color: #5d7c21;
+}
+
+/* Animation for snared effect */
+@keyframes snaredPulse {
+    0% { transform: scale(1); opacity: 0.8; }
+    50% { transform: scale(1.1); opacity: 1; }
+    100% { transform: scale(1); opacity: 0.8; }
+}
+
+.status-effect-icon.status-snared {
+    animation: snaredPulse 2s infinite;
+}
+
+/* CSS for Walzer animation enhancement 
+   Add this to your main CSS file or include as a separate stylesheet */
+
+/* Basic spinning animation */
+@keyframes pokemon-spin {
+    0% { transform: translate(-50%, -50%) rotate(0deg); }
+    100% { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+/* Enhanced version with additional effects */
+@keyframes pokemon-walzer-spin {
+    0% {
+        transform: translate(-50%, -50%) rotate(0deg);
+        filter: brightness(1) blur(0px);
+    }
+    50% {
+        transform: translate(-50%, -50%) rotate(180deg);
+        filter: brightness(1.3) blur(1px);
+    }
+    100% {
+        transform: translate(-50%, -50%) rotate(360deg);
+        filter: brightness(1) blur(0px);
+    }
+}
+
+/* Speed trail effect */
+.pokemon-sprite.spinning::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: inherit;
+    background-position: center;
+    background-size: cover;
+    opacity: 0.6;
+    filter: blur(4px) brightness(1.2);
+    z-index: -1;
+    border-radius: inherit;
+    animation: trail-fade 0.3s linear infinite;
+}
+
+@keyframes trail-fade {
+    0% { opacity: 0.6; transform: scale(1.1); }
+    100% { opacity: 0; transform: scale(1.3); }
+}
+
+/* Apply the spinning animation to sprites with the spinning class */
+.pokemon-sprite.spinning {
+    animation: pokemon-walzer-spin 0.2s linear infinite !important;
+    z-index: 500 !important; /* Ensure the spinning Pokemon is above other elements */
+    box-shadow: 0 0 15px rgba(255, 255, 255, 0.7) !important;
+}
+
+/* Add dust particles when a Pokemon uses Walzer */
+.pokemon-sprite.spinning::before {
+    content: '';
+    position: absolute;
+    width: 200%;
+    height: 200%;
+    top: -50%;
+    left: -50%;
+    background-image: 
+        radial-gradient(circle, rgba(255,255,255,0.8) 1px, transparent 1px),
+        radial-gradient(circle, rgba(255,255,255,0.6) 2px, transparent 2px),
+        radial-gradient(circle, rgba(255,255,255,0.4) 3px, transparent 3px);
+    background-size: 20px 20px, 30px 30px, 40px 40px;
+    animation: dust-rotate 0.5s linear infinite;
+    z-index: -1;
+    pointer-events: none;
+    opacity: 0.7;
+}
+
+@keyframes dust-rotate {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Add a pulse effect when a Pokemon gets hit by Walzer */
+@keyframes walzer-hit-pulse {
+    0% { transform: scale(1); filter: brightness(1); }
+    50% { transform: scale(1.2); filter: brightness(1.5); }
+    100% { transform: scale(1); filter: brightness(1); }
+}
+
+.walzer-hit {
+    animation: walzer-hit-pulse 0.3s ease-in-out;
+}
+
+/* Enhanced styling for round headers and battle log */
+.log-round-header {
+    font-weight: bold;
+    font-size: 18px;
+    color: #2c3e50;
+    text-align: center;
+    margin: 15px 0;
+    padding: 10px;
+    background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+    border: 2px solid #3498db;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.log-round-header strong {
+    font-size: 20px;
+    color: #2980b9;
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.1);
+}
+
+/* Enhanced turn headers */
+.log-turn-header {
+    font-weight: bold;
+    color: #e74c3c;
+    text-align: center;
+    margin: 10px 0;
+    padding: 8px;
+    background-color: #fdf2f2;
+    border-left: 4px solid #e74c3c;
+    border-radius: 4px;
+}
+
+/* Angler-specific styling */
+.log-angler-message {
+    color: #16a085;
+    font-style: italic;
+    margin: 5px 0;
+    padding: 5px 10px;
+    background-color: #e8f8f5;
+    border-left: 3px solid #16a085;
+    border-radius: 3px;
+}
+
+/* General battle log improvements */
+.battle-log-entry {
+    margin-bottom: 8px;
+    padding: 4px 8px;
+    border-radius: 3px;
+    line-height: 1.4;
+}
+
+.battle-log-entry:last-child {
+    margin-bottom: 0;
+}
+
+/* Raufbold protection indicator */
+.raufbold-protection {
+    position: absolute;
+    top: -20px;
+    right: -10px;
+    background-color: #4a90e2;
+    color: white;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    border: 2px solid white;
+    box-shadow: 0 0 5px rgba(0,0,0,0.3);
+    z-index: 100;
+}
+
+/* Protection flash animation */
+.raufbold-protection-flash {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(74,144,226,0.7) 0%, rgba(74,144,226,0) 70%);
+    animation: protection-pulse 0.5s ease-out;
+    pointer-events: none;
+    z-index: 90;
+}
+
+@keyframes protection-pulse {
+    0% {
+        transform: scale(0.5);
+        opacity: 0.8;
+    }
+    100% {
+        transform: scale(2);
+        opacity: 0;
+    }
+}
+
+/* =====================================
+   UNIFIED CUSTOM DROPDOWN SYSTEM
+===================================== */
+
+/* Main Wrapper */
+.unified-custom-dropdown-wrapper {
+    position: relative;
+    width: 50%;
+    user-select: none;
+    min-width: 150px; 
+}
+
+/* Dropdown Container */
+.unified-custom-dropdown {
+    position: relative;
+    width: 100%;
+    border: 1px solid #bdc3c7;
+    border-radius: 4px;
+    background: white;
+    font-size: 12px;
+    transition: all 0.2s ease;
+}
+
+.unified-custom-dropdown:hover {
+    border-color: #3498db;
+}
+
+.unified-custom-dropdown.open {
+    border-color: #3498db;
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
+}
+
+/* Trigger Button */
+.unified-custom-dropdown__trigger {
+    padding: 6px 24px 6px 10px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    min-height: 22px;
+    position: relative;
+    transition: all 0.2s ease;
+    background: white;
+    border-radius: 4px;
+    line-height: 1.2;
+    font-size: 12px;
+}
+
+/* Dropdown Arrow */
+.unified-custom-dropdown__trigger::after {
+    content: '';
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #666;
+    transition: transform 0.2s ease;
+}
+
+.unified-custom-dropdown.open .unified-custom-dropdown__trigger::after {
+    transform: translateY(-50%) rotate(180deg);
+}
+
+.unified-custom-dropdown__trigger:hover {
+    background-color: #f8f9fa;
+}
+
+.unified-custom-dropdown__trigger:focus {
+    outline: none;
+    background-color: #f8f9fa;
+}
+
+/* Options Container */
+.unified-custom-dropdown__options {
+    position: absolute;
+    left: 0;
+    right: 0;
+    background: white;
+    border: 1px solid #3498db;
+    border-top: none;
+    border-radius: 0 0 4px 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    max-height: 300px;
+    overflow-y: auto;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-8px);
+    transition: all 0.2s ease;
+}
+
+.unified-custom-dropdown.open .unified-custom-dropdown__options {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+}
+
+/* When positioned above */
+.unified-custom-dropdown__options.positioned-above {
+    top: auto;
+    bottom: 100%;
+    border-top: 1px solid #3498db;
+    border-bottom: none;
+    border-radius: 4px 4px 0 0;
+    transform: translateY(8px);
+}
+
+.unified-custom-dropdown.open .unified-custom-dropdown__options.positioned-above {
+    transform: translateY(0);
+}
+
+/* Search Container */
+.unified-custom-dropdown__search-container {
+    padding: 8px 10px;
+    border-bottom: 1px solid #ecf0f1;
+    background: #f8f9fa;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+}
+
+.unified-custom-dropdown__search-input {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 12px;
+    box-sizing: border-box;
+    outline: none;
+    transition: border-color 0.2s ease;
+}
+
+.unified-custom-dropdown__search-input:focus {
+    border-color: #3498db;
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
+}
+
+/* Individual Options */
+.unified-custom-dropdown__option {
+    padding: 10px 12px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    border-bottom: 1px solid #f1f2f6;
+    font-size: 12px;
+    line-height: 1.3;
+    display: flex;
+    align-items: center;
+    min-height: 20px;
+}
+
+.unified-custom-dropdown__option:last-child {
+    border-bottom: none;
+}
+
+.unified-custom-dropdown__option:hover {
+    background-color: #e8f4fd;
+    color: #2c3e50;
+}
+
+.unified-custom-dropdown__option.selected {
+    background-color: #3498db;
+    color: white;
+    font-weight: bold;
+}
+
+.unified-custom-dropdown__option.selected:hover {
+    background-color: #2980b9;
+}
+
+.unified-custom-dropdown__option:focus {
+    outline: none;
+    background-color: #e8f4fd;
+}
+
+/* Tooltip Styles */
+.unified-custom-dropdown__tooltip {
+    position: fixed;
+    background: #2c3e50;
+    color: white;
+    padding: 12px;
+    border-radius: 6px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+    max-width: 350px;
+    min-width: 280px;
+    z-index: 10000;
+    font-size: 13px;
+    line-height: 1.4;
+    border: 1px solid #34495e;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(-5px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.unified-custom-dropdown__tooltip[style*="display: block"] {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.unified-custom-dropdown__tooltip .tooltip-header {
+    margin-bottom: 8px;
+    border-bottom: 1px solid #34495e;
+    padding-bottom: 6px;
+}
+
+.unified-custom-dropdown__tooltip .tooltip-header strong {
+    color: #3498db;
+    font-size: 14px;
+}
+
+.unified-custom-dropdown__tooltip .tooltip-description {
+    color: #ecf0f1;
+    text-align: left;
+}
+
+.unified-custom-dropdown__tooltip .tooltip-content {
+    color: #ecf0f1;
+    text-align: left;
+}
+
+.unified-custom-dropdown__tooltip .tooltip-content > div {
+    margin-bottom: 4px;
+}
+
+.unified-custom-dropdown__tooltip .tooltip-content > div:last-child {
+    margin-bottom: 0;
+}
+
+/* Arrow pointing to the option */
+.unified-custom-dropdown__tooltip::before {
+    content: '';
+    position: absolute;
+    left: -8px;
+    top: 20px;
+    width: 0;
+    height: 0;
+    border-top: 8px solid transparent;
+    border-bottom: 8px solid transparent;
+    border-right: 8px solid #2c3e50;
+}
+
+/* When tooltip is positioned to the left */
+.unified-custom-dropdown__tooltip.positioned-left::before {
+    left: auto;
+    right: -8px;
+    border-left: 8px solid #2c3e50;
+    border-right: none;
+}
+
+/* Type badges in tooltips */
+.unified-custom-dropdown__tooltip .type-badge {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: bold;
+    text-transform: uppercase;
+    white-space: nowrap;
+    margin-left: 5px;
+}
+
+/* Scrollbar Styling */
+.unified-custom-dropdown__options::-webkit-scrollbar {
+    width: 6px;
+}
+
+.unified-custom-dropdown__options::-webkit-scrollbar-track {
+    background: #f8f9fa;
+}
+
+.unified-custom-dropdown__options::-webkit-scrollbar-thumb {
+    background: #c1c1c1;
+    border-radius: 3px;
+}
+
+.unified-custom-dropdown__options::-webkit-scrollbar-thumb:hover {
+    background: #a8a8a8;
+}
+
+/* Loading State */
+.unified-custom-dropdown.loading .unified-custom-dropdown__trigger {
+    color: #999;
+    pointer-events: none;
+}
+
+.unified-custom-dropdown.loading .unified-custom-dropdown__trigger::after {
+    border-top-color: #ccc;
+    animation: spin 1s linear infinite;
+}
+
+/* Disabled State */
+.unified-custom-dropdown.disabled {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.unified-custom-dropdown.disabled .unified-custom-dropdown__trigger {
+    background-color: #f5f5f5;
+    color: #999;
+    cursor: not-allowed;
+}
+
+/* Animation for smooth opening */
+@keyframes dropdown-slide-down {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.unified-custom-dropdown.open .unified-custom-dropdown__options {
+    animation: dropdown-slide-down 0.2s ease-out;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .unified-custom-dropdown-wrapper {
+        min-width: 180px;
+    }
+    
+    .unified-custom-dropdown__tooltip {
+        max-width: 280px;
+        min-width: 220px;
+        font-size: 12px;
+    }
+    
+    .unified-custom-dropdown__tooltip .tooltip-header strong {
+        font-size: 13px;
+    }
+    
+    .unified-custom-dropdown__options {
+        max-height: 250px;
+    }
+}
+
+@media (max-width: 480px) {
+    .unified-custom-dropdown-wrapper {
+        min-width: 150px;
+    }
+    
+    .unified-custom-dropdown__tooltip {
+        max-width: 250px;
+        min-width: 200px;
+    }
+}
+
+/* Specific styling for different dropdown contexts */
+
+/* In team building slots - smaller padding */
+.team-slot .unified-custom-dropdown-wrapper {
+    margin-bottom: 2px;
+}
+
+.team-slot .unified-custom-dropdown__trigger {
+    padding: 4px 20px 4px 8px;
+    min-height: 18px;
+    font-size: 11px;
+}
+
+.team-slot .unified-custom-dropdown__option {
+    padding: 8px 10px;
+    font-size: 11px;
+}
+
+/* In trainer section - normal size */
+.trainer-section .unified-custom-dropdown-wrapper {
+    margin-bottom: 5px;
+}
+
+/* In battlefield config - slightly larger */
+.battlefield-config .unified-custom-dropdown-wrapper {
+    min-width: 200px;
+}
+
+.battlefield-config .unified-custom-dropdown__trigger {
+    padding: 8px 28px 8px 12px;
+    min-height: 26px;
+    font-size: 13px;
+}
+
+.battlefield-config .unified-custom-dropdown__option {
+    padding: 10px 12px;
+    font-size: 13px;
+}
+
+/* Focus visible for accessibility */
+.unified-custom-dropdown__trigger:focus-visible {
+    outline: 2px solid #3498db;
+    outline-offset: 2px;
+}
+
+.unified-custom-dropdown__option:focus-visible {
+    outline: 2px solid #3498db;
+    outline-offset: -2px;
+}
+
+/* Add this CSS to your main stylesheet */
+
+/* Enhanced dropdown styling with disabled options support */
+
+/* Base dropdown styling with darker text */
+.unified-custom-dropdown__option {
+    padding: 8px 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    transition: background-color 0.2s ease;
+    color: #1a1a1a; /* Very dark gray, almost black for normal options */
+    font-weight: 500;
+}
+
+.unified-custom-dropdown__option:hover {
+    background-color: #f5f5f5;
+}
+
+.unified-custom-dropdown__option.selected {
+    background-color: #e3f2fd;
+    color: #1976d2;
+    font-weight: 600;
+}
+
+/* Disabled option styling */
+.unified-custom-dropdown__option.disabled {
+    color: #bdbdbd !important; /* Much lighter gray for disabled options */
+    cursor: not-allowed !important;
+    background-color: transparent !important;
+    font-weight: 400;
+    opacity: 0.6;
+}
+
+.unified-custom-dropdown__option.disabled:hover {
+    background-color: #f9f9f9 !important;
+    color: #bdbdbd !important;
+    opacity: 0.5;
+}
+
+/* Disabled options should not be selectable */
+.unified-custom-dropdown__option.disabled * {
+    pointer-events: none;
+}
+
+/* Enhanced trigger styling */
+.unified-custom-dropdown__trigger {
+    color: #1a1a1a; /* Dark text for trigger as well */
+    font-weight: 500;
+}
+
+/* Search input styling to match */
+.unified-custom-dropdown__search-input {
+    color: #1a1a1a;
+    font-weight: 400;
+}
+
+.unified-custom-dropdown__search-input::placeholder {
+    color: #757575;
+    font-weight: 400;
+}
+
+/* Move dropdown specific styling */
+.moves-container .unified-custom-dropdown__option {
+    font-size: 13px;
+    padding: 6px 10px;
+}
+
+.moves-container .unified-custom-dropdown__option.disabled {
+    font-style: italic;
+    position: relative;
+}
+
+/* Add a subtle strikethrough effect for disabled moves */
+.moves-container .unified-custom-dropdown__option.disabled::after {
+    content: '';
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    top: 50%;
+    height: 1px;
+    background-color: #bdbdbd;
+    opacity: 0.7;
+}
+
+/* Tooltip styling for disabled options */
+.unified-custom-dropdown__tooltip {
+    z-index: 10001;
+}
+
+/* Make sure the placeholder text is also darker */
+.unified-custom-dropdown__trigger:empty::before {
+    content: attr(data-placeholder);
+    color: #757575;
+    font-weight: 400;
+}
+
+/* Selected option in moves should be more prominent */
+.moves-container .unified-custom-dropdown__option.selected {
+    background-color: #e8f5e8;
+    color: #2e7d32;
+    border-left: 3px solid #4caf50;
+    font-weight: 600;
+}
+
+/* Disabled selected option (edge case) */
+.unified-custom-dropdown__option.selected.disabled {
+    background-color: #f5f5f5 !important;
+    color: #9e9e9e !important;
+    border-left-color: #bdbdbd !important;
+}
+
+/* Option images (for Pokemon sprites, etc.) */
+.unified-custom-dropdown__option img {
+    margin-right: 8px;
+    width: 24px;
+    height: 24px;
+    object-fit: contain;
+}
+
+/* Disabled option images should be faded */
+.unified-custom-dropdown__option.disabled img {
+    opacity: 0.4;
+    filter: grayscale(50%);
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .unified-custom-dropdown__option {
+        padding: 10px 12px;
+        font-size: 14px;
+    }
+    
+    .moves-container .unified-custom-dropdown__option {
+        padding: 8px 10px;
+        font-size: 12px;
+    }
+}
+
+/* Animation for dropdown opening/closing */
+.unified-custom-dropdown__options {
+    transition: all 0.2s ease;
+    transform-origin: top;
+}
+
+.unified-custom-dropdown:not(.open) .unified-custom-dropdown__options {
+    transform: scaleY(0);
+    opacity: 0;
+}
+
+.unified-custom-dropdown.open .unified-custom-dropdown__options {
+    transform: scaleY(1);
+    opacity: 1;
+}
+
+
+
+.pokemon-header {
+  display: grid;
+  grid-template-columns: 130px 1fr 180px; /* Sprite | flexible middle | fixed-width dropdowns */
+  grid-gap: 8px;
+  margin-bottom: 8px;
+  position: relative;
+  align-items: start;
+}
+
+/* Pokemon sprite container - bigger and positioned in first column */
+.pokemon-sprite-container {
+  width: 130px;
+  height: 130px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.03);
+  border-radius: var(--border-radius-sm);
+  border: 1px solid var(--color-border-light);
+  position: relative;
+  cursor: pointer;
+  grid-column: 1; /* First column */
+  margin-left: 2px;
+  margin-top: 5px;
+  border: 2px solid #4a6fa5;
+}
+
+/* Container for all dropdowns - positioned on the far right */
+.pokemon-dropdowns-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 4px;
+  grid-column: 3; /* Third column - far right */
+  align-self: start;
+}
+
+/* Dropdown styling within the dropdowns container */
+.pokemon-dropdowns-container .custom-select-wrapper,
+.pokemon-dropdowns-container .strategy-container-mini {
+  width: 100%;
+  margin: 0;
+}
+
+.pokemon-dropdowns-container .unified-custom-dropdown-wrapper {
+  margin-bottom: 4px;
+  width: 100%;
+}
+
+.pokemon-dropdowns-container .unified-custom-dropdown__trigger {
+  padding: 4px 20px 4px 8px;
+  min-height: 18px;
+  font-size: 11px;
+  width: 100%;
+}
+
+/* Middle area - flexible space between sprite and dropdowns */
+.pokemon-middle-area {
+  grid-column: 2; /* Second column - middle */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 130px;
+}
+
+/* Moves container - spans full width below the header */
+.moves-container {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-gap: 8px;
+  margin-top: 10px;
+  flex: 1;
+  min-height: 120px;
+  border-top: 1px solid #eee;
+  padding-top: 10px;
+  grid-column: 1 / -1; /* Span all columns */
+}
+
+/* Adjust team slot height for new layout */
+.team-slot {
+  min-height: 280px; /* Increased to accommodate 3-column layout */
+}
+
+/* Make old containers invisible for layout purposes */
+.pokemon-controls,
+.top-row-controls {
+  display: contents;
+}
+
+/* Selected move type backgrounds */
+.unified-custom-dropdown__option.selected.type-water,
+.move-selection-container.selected-water {
+  background-color: rgba(51, 153, 255, 0.2) !important;
+}
+
+.unified-custom-dropdown__option.selected.type-grass,
+.move-selection-container.selected-grass {
+  background-color: rgba(102, 204, 102, 0.2) !important;
+}
+
+.unified-custom-dropdown__option.selected.type-fire,
+.move-selection-container.selected-fire {
+  background-color: rgba(255, 102, 51, 0.2) !important;
+}
+
+.unified-custom-dropdown__option.selected.type-electric,
+.move-selection-container.selected-electric {
+  background-color: rgba(255, 204, 51, 0.2) !important;
+}
+
+.unified-custom-dropdown__option.selected.type-psychic,
+.move-selection-container.selected-psychic {
+  background-color: rgba(255, 102, 204, 0.2) !important;
+}
+
+.unified-custom-dropdown__option.selected.type-ice,
+.move-selection-container.selected-ice {
+  background-color: rgba(102, 204, 255, 0.2) !important;
+}
+
+.unified-custom-dropdown__option.selected.type-dragon,
+.move-selection-container.selected-dragon {
+  background-color: rgba(127, 102, 255, 0.2) !important;
+}
+
+.unified-custom-dropdown__option.selected.type-dark,
+.move-selection-container.selected-dark {
+  background-color: rgba(102, 51, 51, 0.2) !important;
+}
+
+.unified-custom-dropdown__option.selected.type-fighting,
+.move-selection-container.selected-fighting {
+  background-color: rgba(204, 51, 51, 0.2) !important;
+}
+
+.unified-custom-dropdown__option.selected.type-poison,
+.move-selection-container.selected-poison {
+  background-color: rgba(153, 51, 204, 0.2) !important;
+}
+
+.unified-custom-dropdown__option.selected.type-ground,
+.move-selection-container.selected-ground {
+  background-color: rgba(204, 153, 51, 0.2) !important;
+}
+
+.unified-custom-dropdown__option.selected.type-flying,
+.move-selection-container.selected-flying {
+  background-color: rgba(153, 204, 255, 0.2) !important;
+}
+
+.unified-custom-dropdown__option.selected.type-bug,
+.move-selection-container.selected-bug {
+  background-color: rgba(153, 204, 51, 0.2) !important;
+}
+
+.unified-custom-dropdown__option.selected.type-rock,
+.move-selection-container.selected-rock {
+  background-color: rgba(204, 204, 102, 0.2) !important;
+}
+
+.unified-custom-dropdown__option.selected.type-ghost,
+.move-selection-container.selected-ghost {
+  background-color: rgba(102, 102, 204, 0.2) !important;
+}
+
+.unified-custom-dropdown__option.selected.type-steel,
+.move-selection-container.selected-steel {
+  background-color: rgba(153, 153, 204, 0.2) !important;
+}
+
+.unified-custom-dropdown__option.selected.type-fairy,
+.move-selection-container.selected-fairy {
+  background-color: rgba(255, 153, 255, 0.2) !important;
+}
+
+.unified-custom-dropdown__option.selected.type-normal,
+.move-selection-container.selected-normal {
+  background-color: rgba(153, 153, 153, 0.2) !important;
+}

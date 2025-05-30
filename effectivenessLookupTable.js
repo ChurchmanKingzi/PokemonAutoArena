@@ -171,7 +171,7 @@ export function getTypeEffectivenessDescription(attackType, targetTypes) {
     } else if (effectiveness < 1) {
         return "ist nicht sehr effektiv";
     } else if (effectiveness > 1) {
-        return "ist super effektiv";
+        return "ist sehr effektiv";
     } else {
         return "hat normale Wirkung";
     }

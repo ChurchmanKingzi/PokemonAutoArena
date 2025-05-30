@@ -10,6 +10,11 @@ const TRAINER_CLASSES = [
         description: 'Nach jeder Runde erscheint mit einer 10%-Chance ein zufälliges Wasser-Pokemon unter deiner Kontrolle in deinem Team-Bereich.'
     },
     {
+        id: 'arenaleiter',
+        name: 'Arenaleiter',
+        description: 'Pokemon deines Lieblingstyps erhalten +40% auf ihre Statuswerte statt +10%.'
+    },
+    {
         id: 'ace-trainer',
         name: 'Ass-Trainer',
         description: 'Deine Pokemon fügen 2.5-fachen Schaden mit sehr effektiven Attacken zu.'
@@ -32,13 +37,33 @@ const TRAINER_CLASSES = [
     {
         id: 'ninja boy',
         name: 'Ninjajunge',
-        description: 'Am Deine Pokemon lösen, wenn sie besiegt werden, die Attacke Explosion aus.'
+        description: 'Deine Pokemon lösen, wenn sie besiegt werden, die Attacke Explosion aus.'
+    },
+    {
+        id: 'picknicker',
+        name: 'Picknicker',
+        description: 'Der Kampf beginnt mit 8 Runden Sonne. Überschreibt Pokemon-Fähigkeiten, die das Wetter ändern würden.'
     },
     {
         id: 'ruffian',
         name: 'Raufbold',
-        description: 'Der erste Schaden, den jedes deiner Pokemon nehmen würde, wird negiert.'
-    }
+        description: 'Die ersten zwei Attacken, die deine Pokemon treffen, haben keine Wirkung auf sie.'
+    },
+    {
+        id: 'ruinenmaniac',
+        name: 'Ruinenmaniac',
+        description: 'Der Kampf beginnt mit 8 Runden Sandsturm. Überschreibt Pokemon-Fähigkeiten, die das Wetter ändern würden.'
+    },
+    {
+        id: 'schirmdame',
+        name: 'Schirmdame',
+        description: 'Der Kampf beginnt mit 8 Runden Regen. Überschreibt Pokemon-Fähigkeiten, die das Wetter ändern würden.'
+    },
+    {
+        id: 'snowboarder',
+        name: 'Snowboarder',
+        description: 'Der Kampf beginnt mit 8 Runden Schnee. Überschreibt Pokemon-Fähigkeiten, die das Wetter ändern würden.'
+    },
 ];
 
 /**
@@ -74,22 +99,31 @@ export function getTrainerClassDescription(classId) {
  */
 export async function getAvailableTrainerIcons() {
     const existingIcons = [
-        'Ash.png',
-        'Blue.png',
-        'Diamond.png',
-        'Gold.png',
-        'Green.png',
-        'Krys.png',
-        'Max.png',
-        'Misty.png',
-        'Platinum.png',
-        'Red.png',
-        'Rocko.png',
-        'Ruby.png',
-        'Sapphire.png',
-        'Silver.png'
+        '001Ash.png',
+        '002Rocko.png',
+        '003Misty.png',
+        '004Surge.png',
+        '005Erika.png',
+        '006Koga.png',
+        '007Sabrina.png',
+        '008Puppe.png',
+        '009Pyro.png',
+        '010Giovanni.png',
+        '011James.png',
+        '012Jessie.png',
+        '013Mauzi.png',
+        '014Max.png',
+        '015Red.png',
+        '016Blue.png',
+        '017Green.png',
+        '018Gold.png',
+        '019Silver.png',
+        '020Krys.png',
+        '021Ruby.png',
+        '022Sapphire.png',
+        '023Diamond.png',
+        '024Platinum.png',
     ];
     
-    console.log(`Found ${existingIcons.length} trainer icons`);
     return existingIcons.sort();
 }

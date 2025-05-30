@@ -1,11 +1,13 @@
-// dodgeSystem.js - Complete rewrite
+// dodgeSystem.js - Complete rewrite with Reaction System Integration
 
 import { isTileOccupied } from './characterPositions.js';
-import { GRID_SIZE } from './config.js';
 import { rollAttackDice } from './diceRoller.js';
 import { logBattleEvent } from './battleLog.js';
 import { shouldUseLuckToken, useLuckToken } from './luckTokenSystem.js';
 import { hasStatusEffect } from './statusEffects.js';
+import { calculateSizeCategory } from './pokemonSizeCalculator.js';
+import { animateDodge } from './animationManager.js';
+import { attemptReaction } from './reactionSystem.js';
 
 /**
  * Get available positions for dodging
@@ -29,6 +31,22 @@ export function getAvailableDodgePositions(charPos, attackerPos, isRanged = fals
     
     const availablePositions = [];
     
+    // Get the size category of the dodging Pokemon
+    const sizeCategory = calculateSizeCategory(charPos.character) || 1;
+    
+    // Calculate the "radius" of the Pokemon (how many tiles it extends in each direction)
+    const radius = Math.floor(sizeCategory / 2);
+    
+    // Find the charId for the dodging Pokemon
+    const characterPositions = getCharacterPositions();
+    let targetCharId = null;
+    for (const charId in characterPositions) {
+        if (characterPositions[charId] === charPos) {
+            targetCharId = charId;
+            break;
+        }
+    }
+    
     // Check each direction for valid dodge positions
     for (const dir of directions) {
         // Check positions 1 and 2 tiles away
@@ -36,14 +54,27 @@ export function getAvailableDodgePositions(charPos, attackerPos, isRanged = fals
             const newX = charPos.x + (dir.x * distance);
             const newY = charPos.y + (dir.y * distance);
             
-            // Check if position is within the battlefield
-            if (newX < 0 || newX >= GRID_SIZE || newY < 0 || newY >= GRID_SIZE) {
-                continue; // Skip positions outside the battlefield
+            // Check if all required tiles are empty and within bounds
+            let allTilesValid = true;
+            
+            // Check all tiles that would be occupied by the Pokemon
+            for (let dx = -radius; dx <= radius; dx++) {
+                for (let dy = -radius; dy <= radius; dy++) {
+                    const tileX = newX + dx;
+                    const tileY = newY + dy;
+                    
+                    // Use isTileOccupied function to check if tile is valid
+                    if (isTileOccupied(tileX, tileY, targetCharId)) {
+                        allTilesValid = false;
+                        break;
+                    }
+                }
+                
+                if (!allTilesValid) break;
             }
             
-            // Check if position is not occupied
-            if (isTileOccupied(newX, newY)) {
-                continue; // Skip occupied positions
+            if (!allTilesValid) {
+                continue; // Skip positions where not all required tiles are valid
             }
             
             // For melee attacks, check if the position is out of melee range
@@ -94,18 +125,34 @@ export function calculateDodgeValue(character) {
 }
 
 /**
- * Attempt to dodge an attack based on dice rolls
+ * Attempt to dodge an attack based on dice rolls - NOW WITH REACTION SYSTEM
  * @param {Object} attacker - Attacker data
  * @param {Object} target - Target data
  * @param {Object} attackRoll - Attacker's roll result
  * @param {Object} selectedAttack - Attack being used
- * @returns {Object} - Result of dodge attempt
+ * @returns {Promise<Object>} - Result of dodge attempt
  */
-export function attemptDodge(attacker, target, attackRoll, selectedAttack) {
+export async function attemptDodge(attacker, target, attackRoll, selectedAttack) {
+    // STEP 1: Check for status effects that prevent both reactions and dodging
     if (hasStatusEffect(target.character, 'frozen')) {
-        logBattleEvent(`${target.character.name} ist eingefroren und kann nicht ausweichen!`);
+        logBattleEvent(`${target.character.name} ist eingefroren und kann weder reagieren noch ausweichen!`);
         return {
             success: false,
+            reactionTriggered: false,
+            roll: {
+                rolls: [],
+                successes: 0,
+                failures: 0,
+                netSuccesses: 0
+            }
+        };
+    }
+
+    if (hasStatusEffect(target.character, 'snared')) {
+        logBattleEvent(`${target.character.name} ist gefesselt und kann weder reagieren noch ausweichen!`);
+        return {
+            success: false,
+            reactionTriggered: false,
             roll: {
                 rolls: [],
                 successes: 0,
@@ -116,9 +163,10 @@ export function attemptDodge(attacker, target, attackRoll, selectedAttack) {
     }
 
     if (hasStatusEffect(target.character, 'asleep')) {
-        logBattleEvent(`${target.character.name} schläft und kann nicht ausweichen!`);
+        logBattleEvent(`${target.character.name} schläft und kann weder reagieren noch ausweichen!`);
         return {
             success: false,
+            reactionTriggered: false,
             roll: {
                 rolls: [],
                 successes: 0,
@@ -128,12 +176,13 @@ export function attemptDodge(attacker, target, attackRoll, selectedAttack) {
         };
     }
 
+    // STEP 2: Check for paralysis (30% chance to prevent both reactions and dodging)
     if (hasStatusEffect(target.character, 'paralyzed')) {
-        // 30% chance to fail dodge due to paralysis
         if (Math.random() < 0.3) {
-            logBattleEvent(`${target.character.name} ist paralysiert und kann nicht ausweichen!`);
+            logBattleEvent(`${target.character.name} ist paralysiert und kann weder reagieren noch ausweichen!`);
             return {
                 success: false,
+                reactionTriggered: false,
                 roll: {
                     rolls: [],
                     successes: 0,
@@ -144,6 +193,33 @@ export function attemptDodge(attacker, target, attackRoll, selectedAttack) {
         }
     }
 
+    // STEP 3: Attempt reaction BEFORE dodge
+    let reactionTriggered = false;
+    try {
+        // Pass the selectedAttack for reaction filtering
+        reactionTriggered = await attemptReaction(target.character, attacker.character, selectedAttack);
+        
+        if (reactionTriggered) {
+            logBattleEvent(`${target.character.name} führt eine Reaktion aus und kann nicht mehr ausweichen!`);
+            // If reaction triggered, return immediately without ANY dodge attempt
+            return {
+                success: false, // No dodge
+                reactionTriggered: true,
+                roll: {
+                    rolls: [],
+                    successes: 0,
+                    failures: 0,
+                    netSuccesses: 0
+                }
+            };
+        }
+    } catch (error) {
+        console.error("Error attempting reaction:", error);
+        // Continue with normal dodge if reaction fails
+    }
+
+    // STEP 4: If no reaction, proceed with normal dodge attempt
+    
     // Calculate dodge value
     const dodgeValue = calculateDodgeValue(target.character);
     
@@ -179,6 +255,7 @@ export function attemptDodge(attacker, target, attackRoll, selectedAttack) {
             if (newDodgeSuccessful) {
                 return {
                     success: true,
+                    reactionTriggered: false,
                     roll: newDodgeRoll
                 };
             }
@@ -187,6 +264,7 @@ export function attemptDodge(attacker, target, attackRoll, selectedAttack) {
     
     return {
         success: dodgeSuccessful,
+        reactionTriggered: false,
         roll: dodgeRoll
     };
 }
@@ -215,4 +293,100 @@ export function chooseDodgePosition(target, attacker, isRanged) {
 function getCharacterPositions() {
     // We use this approach to avoid circular dependencies
     return window.characterPositions || {};
+}
+
+/**
+ * Attempt to dodge an attack based on the enhanced dodge rules
+ * @param {Object} attacker - The attacking character
+ * @param {Object} target - The target character
+ * @param {Object} attackRoll - The attacker's roll result
+ * @param {Object} selectedAttack - The attack being used
+ * @returns {Promise<Object>} - Result of dodge attempt {success, position, roll, reactionTriggered}
+ */
+export async function attemptEnhancedDodge(attacker, target, attackRoll, selectedAttack) {    
+    // First check for reactions and basic dodge attempt
+    const dodgeResult = await attemptDodge(attacker, target, attackRoll, selectedAttack);
+    
+    // If reaction was triggered, return early (no dodge possible)
+    if (dodgeResult.reactionTriggered) {
+        return {
+            success: false,
+            roll: dodgeResult.roll,
+            reactionTriggered: true,
+            message: `${target.character.name} used a reaction attack instead of dodging.`
+        };
+    }
+    
+    // If dodge failed by the roll, return early
+    if (!dodgeResult.success) {
+        return {
+            success: false,
+            roll: dodgeResult.roll,
+            reactionTriggered: false,
+            message: `${target.character.name} failed to dodge (insufficient successes).`
+        };
+    }
+    
+    // Get available dodge positions
+    const isRanged = selectedAttack.type === 'ranged';
+    const dodgePositions = getAvailableDodgePositions(target, attacker, isRanged);
+    
+    // If no positions available, dodge fails despite successful roll
+    if (!dodgePositions || dodgePositions.length === 0) {
+        return {
+            success: false,
+            roll: dodgeResult.roll,
+            reactionTriggered: false,
+            message: `${target.character.name} rolled enough successes but has no valid position to dodge to.`
+        };
+    }
+    
+    let validDodgePositions = [...dodgePositions];
+    
+    // Choose a random dodge position from valid ones
+    const dodgePos = validDodgePositions[Math.floor(Math.random() * validDodgePositions.length)];
+    
+    // Find the target character ID
+    const characterPositions = getCharacterPositions();
+    const targetId = Object.keys(characterPositions).find(id => 
+        characterPositions[id].character === target.character);
+    
+    if (!targetId) {
+        return {
+            success: false,
+            roll: dodgeResult.roll,
+            reactionTriggered: false,
+            message: `Error: Target character ID not found`
+        };
+    }
+    
+    // Return successful dodge result
+    return {
+        success: true,
+        position: dodgePos,
+        targetId: targetId,
+        roll: dodgeResult.roll,
+        reactionTriggered: false,
+        message: `${target.character.name} dodges successfully!`
+    };
+}
+
+/**
+ * Execute dodge animation and update character position
+ * @param {Object} dodgeResult - Result from attemptEnhancedDodge
+ * @returns {Promise<boolean>} - Whether dodge was completed
+ */
+export function executeDodge(dodgeResult) {
+    return new Promise(resolve => {
+        if (!dodgeResult.success) {
+            resolve(false);
+            return;
+        }
+        
+        // Animate the dodge
+        animateDodge(dodgeResult.targetId, dodgeResult.position, () => {
+            updateCharacterPosition(dodgeResult.targetId, dodgeResult.position);
+            resolve(true);
+        });
+    });
 }

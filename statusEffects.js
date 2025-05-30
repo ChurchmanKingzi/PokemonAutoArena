@@ -1,8 +1,9 @@
 /**
  * Status Effects System for Pokémon Battle Simulator
+ * Updated to work with the Pokemon overlay system for status icons
  */
-import { createDamageNumber } from './damageNumbers.js';
-import { updatePokemonHPBar } from './pokemonOverlay.js';
+import { updatePokemonStatusIcons } from './pokemonOverlay.js';
+import { applyStatusDamage, STATUS_SOURCE } from'./damage.js';
 
 // Define all status effects with their properties
 export const STATUS_EFFECTS = {
@@ -51,7 +52,7 @@ export const STATUS_EFFECTS = {
   CONFUSED: {
     id: 'confused',
     name: 'Verwirrt',
-    effect: 'Das Pokemon hat eine 50%-Chance, ein verbündetes Ziel in Reichweite anzugreifen, falls möglich.',
+    effect: 'Das Pokemon zielt auf den nächsten Verbündeten anstatt auf Gegner. Ohne Verbündete bewegt es sich zufällig. 30% Chance pro Runde, sich zu erholen.',
     cssClass: 'status-confused',
     htmlSymbol: '?'
   },
@@ -82,7 +83,16 @@ export const STATUS_EFFECTS = {
     effect: 'Fügt dem Pokemon nach jeder seiner Runden 1/16 seiner max KP als Schaden zu und heilt den Verursacher um denselben Betrag.',
     cssClass: 'status-seeded',
     htmlSymbol: '🌿'
-  }
+  },
+  SNARED: {
+    id: 'snared',
+    name: 'Gefesselt',
+    effect: 'Das Pokemon kann sich bis zum Ende seines nächsten Zugs nicht bewegen und nicht ausweichen.',
+    cssClass: 'status-snared',
+    htmlSymbol: '🕸️',
+    preventMovement: true,
+    preventDodge: true
+  },
 };
 
 /**
@@ -109,6 +119,32 @@ export function addStatusEffect(pokemon, effectId, options = {}) {
     
     // Initialize if needed
     initializeStatusEffects(pokemon);
+    
+    // Check for Floraschild ability immunity in sunny weather
+    // We need to do this synchronously, so we'll check if a global weather state exists
+    if (typeof window !== 'undefined' && window.battleWeatherState) {
+        const hasFloraschild = hasPokemonAbility(pokemon, ['floraschild', 'flower shield'], true);
+        const isSunny = window.battleWeatherState.state === 'Sonne';
+        
+        if (hasFloraschild && isSunny) {
+            // Log the immunity message asynchronously
+            import('./battleLog.js').then(module => {
+                module.logBattleEvent(`${pokemon.name}'s Floraschild verhindert den Statuseffekt bei Sonnenschein!`);
+            }).catch(err => console.error("Error logging Floraschild immunity:", err));
+            
+            return false; // Status effect blocked
+        }
+    } else {
+        // Fallback: Try to get weather state through dynamic import
+        // This will only work for subsequent calls in the same session
+        import('./weather.js').then(weatherModule => {
+            const currentWeather = weatherModule.getCurrentWeather();
+            // Store weather state globally for future synchronous access
+            if (typeof window !== 'undefined') {
+                window.battleWeatherState = currentWeather;
+            }
+        }).catch(err => console.error("Error accessing weather state:", err));
+    }
     
     // Don't add duplicates (except in special cases like badly poisoned)
     if (hasStatusEffect(pokemon, effectId) && effectId !== 'badly-poisoned') return false;
@@ -138,7 +174,7 @@ export function addStatusEffect(pokemon, effectId, options = {}) {
     // Add to the Pokémon's status effects
     pokemon.statusEffects.push(effectInstance);
     
-    // Update visual display if on battlefield
+    // Update visual display using the new overlay system
     updateStatusEffectsVisual(pokemon);
 
     setTimeout(() => {
@@ -180,6 +216,7 @@ export function processStatusEffectsStart(pokemon) {
     }
     
     const messages = [];
+    const statusesToRemove = [];
     
     // Process each status effect
     pokemon.statusEffects.forEach(effect => {
@@ -192,6 +229,7 @@ export function processStatusEffectsStart(pokemon) {
                     pokemon.skipTurn = true;
                 }
                 break;
+                
             case 'asleep':
                 messages.push(`${pokemon.name} schläft tief und fest.`);
                 pokemon.skipTurn = true;
@@ -203,7 +241,7 @@ export function processStatusEffectsStart(pokemon) {
                     pokemon.skipTurn = false;
                 }
                 break;
-            
+
             case 'frozen':
                 messages.push(`${pokemon.name} ist eingefroren und kann sich nicht bewegen!`);
                 pokemon.skipTurn = true;
@@ -240,16 +278,25 @@ export function processStatusEffectsStart(pokemon) {
                     }
                 }
                 break;
+
             case 'confused':
-                // 50% chance to attack allies
-                if (Math.random() < 0.5) {
-                    pokemon.attackAllies = true;
-                    messages.push(`${pokemon.name} ist verwirrt und könnte verbündete angreifen!`);
-                }
+                // Confused Pokemon targets allies instead of enemies
+                pokemon.isConfused = true;
+                messages.push(`${pokemon.name} ist verwirrt und kann Freund und Feind nicht unterscheiden!`);
                 break;
         }
     });
     
+    // Add this section to actually remove the status effects
+    statusesToRemove.forEach(effectId => {
+        removeStatusEffect(pokemon, effectId);
+    });
+    
+    // Update visual representation if needed
+    if (statusesToRemove.length > 0) {
+        updateStatusEffectsVisual(pokemon);
+    }
+
     return messages;
 }
 
@@ -303,7 +350,7 @@ export function hasStatusEffect(pokemon, effectId) {
 }
 
 /**
- * Create a DOM element for status effect icons
+ * Create a DOM element for status effect icons (legacy function, kept for compatibility)
  * @param {Object} pokemon - Pokémon to create status icons for
  * @returns {HTMLElement|null} - DOM element with status icons or null
  */
@@ -425,58 +472,54 @@ export function hasPokemonAbility(pokemon, abilityNames, partialMatch = true) {
  * Process status effects at the end of a turn
  * @param {Object} pokemon - The Pokémon to process
  * @param {Object} position - The position of the Pokémon {x, y}
- * @returns {Object} - Object with messages array and damage amount
+ * @returns {Promise<Object>} - Object with messages array and damage amount
  */
-export function processStatusEffectsEnd(pokemon, position) {
+export async function processStatusEffectsEnd(pokemon, position) {
     if (!pokemon || !pokemon.statusEffects || pokemon.statusEffects.length === 0) {
         return { messages: [], damage: 0 };
     }
     
     const messages = [];
     let totalDamage = 0;
+    const statusesToRemove = [];    
     
-    // Check if the Pokemon has the Aufheber/Poison Heal ability using our new helper function
-    const hasGiftheilung = hasPokemonAbility(pokemon, ['aufheber', 'poison heal', 'giftheilung']);
+    // Find the character ID for this Pokemon
+    let pokemonId = null;
+    const { getCharacterPositions } = await import('./characterPositions.js');
+    const characterPositions = getCharacterPositions();
+    
+    for (const charId in characterPositions) {
+        if (characterPositions[charId].character && 
+            characterPositions[charId].character.uniqueId === pokemon.uniqueId) {
+            pokemonId = charId;
+            break;
+        }
+    }
     
     // Process each status effect
-    pokemon.statusEffects.forEach(effect => {
+    for (const effect of pokemon.statusEffects) {
         // Increment turn counter for the effect
-        effect.turnCount++;
+        effect.turnCount = (effect.turnCount || 0) + 1;
         
-        // Handle end-of-turn damage effects
+        // Handle end-of-turn effects
         switch (effect.id) {
             case 'poisoned':
                 const poisonDamage = Math.max(1, Math.floor(pokemon.maxKP / 16));
                 
-                if (hasGiftheilung) {
-                    // HEALING instead of damage for Aufheber ability
-                    const healAmount = Math.min(poisonDamage, pokemon.maxKP - pokemon.currentKP);
-                    
-                    if (healAmount > 0) {
-                        pokemon.currentKP += healAmount;
-                        messages.push(`${pokemon.name} wird durch Gift um ${healAmount} KP geheilt! (Aufheber)`);
-                        
-                        // ADD HP BAR UPDATE FOR HEALING:
-                        updatePokemonHPBar (pokemon.uniqueId, pokemon);
-                        
-                        // Show healing number if position is provided
-                        if (position) {
-                            createDamageNumber(healAmount, position, true, 'heal');
-                        }
+                // Apply poison damage through damage system - it will handle Poison Heal ability internally
+                const poisonResult = await applyStatusDamage(
+                    pokemon, STATUS_SOURCE.POISON, poisonDamage,
+                    {
+                        sourceId: effect.sourceId, sourceName: effect.sourceName
+                    },
+                    {
+                        targetId: pokemonId
                     }
-                } else {
-                    // Normal poison damage
-                    totalDamage += poisonDamage;
-                    pokemon.currentKP = Math.max(0, pokemon.currentKP - poisonDamage);
-                    messages.push(`${pokemon.name} erleidet ${poisonDamage} Schaden durch Gift!`);
-                    
-                    // ADD HP BAR UPDATE FOR DAMAGE:
-                    updatePokemonHPBar (pokemon.uniqueId, pokemon);
-                    
-                    // Show damage number if position is provided
-                    if (position) {
-                        createDamageNumber(poisonDamage, position, false, 'poison');
-                    }
+                );
+                
+                // Add to total damage if damage was applied
+                if (poisonResult.applied) {
+                    totalDamage += poisonResult.damage;
                 }
                 break;
                 
@@ -484,123 +527,224 @@ export function processStatusEffectsEnd(pokemon, position) {
                 const poisonStacks = effect.turnCount;
                 const badPoisonDamage = Math.max(1, Math.floor((pokemon.maxKP / 16) * poisonStacks));
                 
-                if (hasGiftheilung) {
-                    // HEALING instead of damage for Aufheber ability
-                    const healAmount = Math.min(badPoisonDamage, pokemon.maxKP - pokemon.currentKP);
-                    
-                    if (healAmount > 0) {
-                        pokemon.currentKP += healAmount;
-                        messages.push(`${pokemon.name} wird durch schweres Gift um ${healAmount} KP geheilt! (Aufheber)`);
-                        
-                        // ADD HP BAR UPDATE FOR HEALING:
-                        updatePokemonHPBar (pokemon.uniqueId, pokemon);
-                        
-                        // Show healing number if position is provided
-                        if (position) {
-                            createDamageNumber(healAmount, position, true, 'heal');
-                        }
-                    } else {
-                        messages.push(`${pokemon.name} hat bereits volle KP und kann durch Aufheber nicht mehr geheilt werden.`);
+                // Apply bad poison damage through damage system
+                const badPoisonResult = await applyStatusDamage(
+                    pokemon, 
+                    STATUS_SOURCE.BADLY_POISON, 
+                    badPoisonDamage,
+                    {
+                        sourceId: effect.sourceId,
+                        sourceName: effect.sourceName
+                    },
+                    {
+                        targetId: pokemonId
                     }
-                } else {
-                    // Normal badly poisoned damage
-                    totalDamage += badPoisonDamage;
-                    messages.push(`${pokemon.name} erleidet ${badPoisonDamage} Schaden durch schweres Gift!`);
-                    
-                    // ADD HP BAR UPDATE FOR DAMAGE:
-                    updatePokemonHPBar (pokemon.uniqueId, pokemon);
-                    
-                    // Show damage number if position is provided
-                    if (position) {
-                        createDamageNumber(badPoisonDamage, position, false, 'poison');
-                    }
+                );
+                
+                // Add to total damage if damage was applied
+                if (badPoisonResult.applied) {
+                    totalDamage += badPoisonResult.damage;
                 }
                 break;
                 
-            // The rest of the cases remain unchanged
             case 'burned':
                 // Ensure burn damage is 1/8 of max HP, rounded up
                 const burnDamage = Math.max(1, Math.ceil(pokemon.maxKP / 8));
-                totalDamage += burnDamage;
-                messages.push(`${pokemon.name} erleidet ${burnDamage} Schaden durch Verbrennung!`);
-                    
-                // ADD HP BAR UPDATE FOR DAMAGE:
-                updatePokemonHPBar (pokemon.uniqueId, pokemon);
                 
-                // Show damage number if position is provided
-                if (position) {
-                    createDamageNumber(burnDamage, position, false, 'burn');
+                // Apply burn damage through damage system
+                const burnResult = await applyStatusDamage(
+                    pokemon, 
+                    STATUS_SOURCE.BURN, 
+                    burnDamage,
+                    {
+                        sourceId: effect.sourceId,
+                        sourceName: effect.sourceName
+                    },
+                    {
+                        targetId: pokemonId
+                    }
+                );
+                
+                // Add to total damage if damage was applied
+                if (burnResult.applied) {
+                    totalDamage += burnResult.damage;
                 }
                 break;
                 
             case 'cursed':
                 const curseDamage = Math.max(1, Math.floor(pokemon.maxKP / 4));
-                totalDamage += curseDamage;
-                messages.push(`${pokemon.name} erleidet ${curseDamage} Schaden durch den Fluch!`);
-                    
-                // ADD HP BAR UPDATE FOR DAMAGE:
-                updatePokemonHPBar (pokemon.uniqueId, pokemon);
                 
-                // Show damage number if position is provided
-                if (position) {
-                    createDamageNumber(curseDamage, position, false, 'curse');
+                // Apply curse damage through damage system
+                const curseResult = await applyStatusDamage(
+                    pokemon, 
+                    STATUS_SOURCE.CURSE, 
+                    curseDamage,
+                    {
+                        sourceId: effect.sourceId,
+                        sourceName: effect.sourceName
+                    },
+                    {
+                        targetId: pokemonId
+                    }
+                );
+                
+                // Add to total damage if damage was applied
+                if (curseResult.applied) {
+                    totalDamage += curseResult.damage;
                 }
                 break;
                 
             case 'seeded':
                 const seedDamage = Math.max(1, Math.floor(pokemon.maxKP / 16));
-                totalDamage += seedDamage;
-                messages.push(`${pokemon.name} verliert ${seedDamage} KP durch Egelsamen!`);
-                    
-                // ADD HP BAR UPDATE FOR DAMAGE:
-                updatePokemonHPBar (pokemon.uniqueId, pokemon);
                 
-                // Show damage number if position is provided
-                if (position) {
-                    createDamageNumber(seedDamage, position, false, 'seed');
+                // Get source character if available for healing
+                let sourceCharacter = null;
+                let sourceId = null;
+                
+                if (effect.sourceId) {
+                    for (const charId in characterPositions) {
+                        const charPos = characterPositions[charId];
+                        if (charPos.character && charPos.character.uniqueId === effect.sourceId) {
+                            sourceCharacter = charPos.character;
+                            sourceId = charId;
+                            break;
+                        }
+                    }
                 }
                 
-                // Try to heal the source if it exists
-                if (effect.sourceId) {
-                    import('./characterPositions.js').then(module => {
-                        const { getCharacterPositions } = module;
-                        const characterPositions = getCharacterPositions();
-                        
-                        // Find source by ID
-                        for (const charId in characterPositions) {
-                            if (characterPositions[charId].character && 
-                                characterPositions[charId].character.uniqueId === effect.sourceId) {
-                                const source = characterPositions[charId].character;
-                                // Heal the source
-                                if (source.currentKP < source.maxKP) {
-                                    const healAmount = Math.min(seedDamage, source.maxKP - source.currentKP);
-                                    source.currentKP += healAmount;
-                                    messages.push(`${source.name} erhält ${healAmount} KP durch Egelsamen!`);
-                                }
-                                break;
-                            }
-                        }
-                    });
+                // Apply leech seed damage through damage system
+                const seedResult = await applyStatusDamage(
+                    pokemon, 
+                    STATUS_SOURCE.LEECH_SEED, 
+                    seedDamage,
+                    {
+                        sourceId: sourceId,
+                        sourceCharacter: sourceCharacter,
+                        sourceName: effect.sourceName
+                    },
+                    {
+                        targetId: pokemonId
+                    }
+                );
+                
+                // Add to total damage if damage was applied
+                if (seedResult.applied) {
+                    totalDamage += seedResult.damage;
                 }
                 break;
                 
             case 'held':
                 const holdDamage = Math.max(1, Math.floor(pokemon.maxKP / 16));
-                totalDamage += holdDamage;
-                messages.push(`${pokemon.name} erleidet ${holdDamage} Schaden durch Festhalten!`);
-                    
-                // ADD HP BAR UPDATE FOR DAMAGE:
-                updatePokemonHPBar (pokemon.uniqueId, pokemon);
                 
-                // Show damage number if position is provided
-                if (position) {
-                    createDamageNumber(holdDamage, position, false, 'hold');
+                // Apply trap damage through damage system
+                const trapResult = await applyStatusDamage(
+                    pokemon, 
+                    STATUS_SOURCE.TRAP, 
+                    holdDamage,
+                    {
+                        sourceId: effect.sourceId,
+                        sourceName: effect.sourceName
+                    },
+                    {
+                        targetId: pokemonId
+                    }
+                );
+                
+                // Add to total damage if damage was applied
+                if (trapResult.applied) {
+                    totalDamage += trapResult.damage;
+                }
+                break;
+                
+            case 'snared':
+                // Check if the snared effect has reached its duration
+                if (effect.duration && effect.turnCount >= effect.duration) {
+                    // Mark for removal
+                    statusesToRemove.push(effect.id);
+                    messages.push(`${pokemon.name} hat sich aus den Fäden befreit und kann sich wieder bewegen.`);
+                }
+                break;
+                
+            case 'confused':
+                // 30% chance to recover from confusion at end of turn
+                if (Math.random() < 0.3) {
+                    statusesToRemove.push(effect.id);
+                    messages.push(`${pokemon.name} hat sich von der Verwirrung erholt!`);
                 }
                 break;
         }
+    }
+    
+    // Remove all status effects marked for removal
+    statusesToRemove.forEach(effectId => {
+        removeStatusEffect(pokemon, effectId);
     });
     
+    // Update visual representation if needed
+    if (statusesToRemove.length > 0) {
+        updateStatusEffectsVisual(pokemon);
+    }
+    
     return { messages, damage: totalDamage };
+}
+
+/**
+ * Update the visual representation of status effects for a Pokemon using the overlay system
+ * @param {Object} pokemon - The Pokémon to update visuals for
+ */
+export function updateStatusEffectsVisual(pokemon) {
+    if (!pokemon || !pokemon.uniqueId) return;
+    
+    // Find character ID using uniqueId and update using the overlay system
+    import('./characterPositions.js').then(module => {
+        const { getCharacterPositions } = module;
+        const characterPositions = getCharacterPositions();
+        
+        for (const charId in characterPositions) {
+            if (characterPositions[charId].character && 
+                characterPositions[charId].character.uniqueId === pokemon.uniqueId) {
+                
+                // Update status icons in the overlay system
+                updatePokemonStatusIcons(charId).catch(err => {
+                    console.error("Error updating Pokemon status icons:", err);
+                });
+                
+                // Still update old visual effects for frozen/burned states on battlefield elements
+                updateOldStyleVisualEffects(charId, pokemon);
+                break;
+            }
+        }
+    }).catch(err => {
+        console.error("Error updating status effects visual:", err);
+    });
+}
+
+/**
+ * Update old-style visual effects (like frozen/burned classes) on battlefield elements
+ * This is kept for compatibility with existing visual effects
+ * @param {string} charId - Character ID on the battlefield
+ * @param {Object} pokemon - Pokemon data
+ */
+function updateOldStyleVisualEffects(charId, pokemon) {
+    // Find both possible character elements (regular tile and character overlay)
+    const characterEls = document.querySelectorAll(`.battlefield-character[data-character-id="${charId}"]`);
+    
+    characterEls.forEach(charEl => {
+        // Remove specific effect classes
+        charEl.classList.remove('frozen-effect', 'burned-effect');
+        
+        // Only continue if Pokémon has status effects
+        if (!pokemon.statusEffects || pokemon.statusEffects.length === 0) return;
+        
+        // Add specific visual effects for certain statuses
+        pokemon.statusEffects.forEach(effect => {
+            if (effect.id === 'frozen') {
+                charEl.classList.add('frozen-effect');
+            } else if (effect.id === 'burned') {
+                charEl.classList.add('burned-effect');
+            }
+        });
+    });
 }
 
 /**
@@ -622,77 +766,27 @@ export function updateAllStatusEffectsVisual() {
 }
 
 /**
- * Update the visual representation of status effects for a Pokemon
- * @param {Object} pokemon - The Pokémon to update visuals for
- */
-export function updateStatusEffectsVisual(pokemon) {
-  if (!pokemon || !pokemon.uniqueId) return;
-  
-  // Find character ID using uniqueId
-  import('./characterPositions.js').then(module => {
-    const { getCharacterPositions } = module;
-    const characterPositions = getCharacterPositions();
-    
-    for (const charId in characterPositions) {
-      if (characterPositions[charId].character && 
-          characterPositions[charId].character.uniqueId === pokemon.uniqueId) {
-        updateStatusEffectsVisualForChar(charId);
-        break;
-      }
-    }
-  });
-}
-
-/**
- * Update status effect visual for a specific character ID
+ * Update status effect visual for a specific character ID (legacy function)
+ * Now delegates to the overlay system
  * @param {string} charId - Character ID on the battlefield
  */
 export function updateStatusEffectsVisualForChar(charId) {
-  // Import to avoid circular reference
-  import('./characterPositions.js').then(module => {
-    const { getCharacterPositions } = module;
-    const characterPositions = getCharacterPositions();
-    
-    if (!characterPositions[charId] || !characterPositions[charId].character) return;
-    
-    const pokemon = characterPositions[charId].character;
-    
-    // Find both possible character elements (regular tile and character overlay)
-    const characterEls = document.querySelectorAll(`.battlefield-character[data-character-id="${charId}"]`);
-    if (characterEls.length === 0) return;
-    
-    // For each character element
-    characterEls.forEach(charEl => {
-      // Remove existing status containers
-      const existingContainer = charEl.querySelector('.status-effects-container');
-      if (existingContainer) {
-        existingContainer.remove();
-      }
-      
-      // Remove specific effect classes
-      charEl.classList.remove('frozen-effect', 'burned-effect');
-      
-      // Only continue if Pokémon has status effects
-      if (!pokemon.statusEffects || pokemon.statusEffects.length === 0) return;
-      
-      // Add specific visual effects for certain statuses
-      pokemon.statusEffects.forEach(effect => {
-        if (effect.id === 'frozen') {
-          charEl.classList.add('frozen-effect');
-        } else if (effect.id === 'burned') {
-          charEl.classList.add('burned-effect');
-        }
-      });
-      
-      // Create new status effects display
-      const statusDisplay = createStatusEffectsDisplay(pokemon);
-      if (!statusDisplay) return;
-      
-      // Add the status display DIRECTLY TO THE CHARACTER ELEMENT
-      // This is the key change - making it a child of the Pokémon element so it moves with it
-      charEl.appendChild(statusDisplay);
+    // Update using the new overlay system
+    updatePokemonStatusIcons(charId).catch(err => {
+        console.error("Error updating status icons for character:", charId, err);
     });
-  });
+    
+    // Also update old style visual effects
+    import('./characterPositions.js').then(module => {
+        const { getCharacterPositions } = module;
+        const characterPositions = getCharacterPositions();
+        
+        if (characterPositions[charId] && characterPositions[charId].character) {
+            updateOldStyleVisualEffects(charId, characterPositions[charId].character);
+        }
+    }).catch(err => {
+        console.error("Error updating old style visual effects:", err);
+    });
 }
 
 /**
@@ -752,4 +846,439 @@ export function wakeUpFromDamage(pokemon, damage) {
     const wokeUp = removeStatusEffect(pokemon, 'asleep');
     
     return wokeUp;
+}
+
+/**
+ * Remove all status effects from a Pokémon
+ * @param {Object} pokemon - Pokémon to remove all effects from
+ * @returns {Array} - Array of effect names that were removed
+ */
+export function removeAllStatusEffects(pokemon) {
+    if (!pokemon || !pokemon.statusEffects || pokemon.statusEffects.length === 0) {
+        return [];
+    }
+    
+    // Store the names of effects being removed for logging
+    const removedEffects = pokemon.statusEffects.map(effect => effect.name);
+    
+    // Clear the status effects array
+    pokemon.statusEffects = [];
+    
+    // Clear any status-related flags
+    pokemon.skipTurn = false;
+    pokemon.isConfused = false;
+    
+    // Update visual representation using the overlay system
+    updateStatusEffectsVisual(pokemon);
+    
+    // Find and remove visual status effect indicators from DOM (legacy cleanup)
+    if (pokemon.uniqueId) {
+        // Find character ID using uniqueId
+        import('./characterPositions.js').then(module => {
+            const { getCharacterPositions } = module;
+            const characterPositions = getCharacterPositions();
+            
+            for (const charId in characterPositions) {
+                if (characterPositions[charId].character && 
+                    characterPositions[charId].character.uniqueId === pokemon.uniqueId) {
+                    
+                    // Find character elements on battlefield
+                    const characterEls = document.querySelectorAll(`[data-character-id="${charId}"], [data-char-id="${charId}"]`);
+                    
+                    characterEls.forEach(characterElement => {
+                        // Remove status effects container if it exists
+                        const statusContainer = characterElement.querySelector('.status-effects-container');
+                        if (statusContainer) {
+                            statusContainer.innerHTML = '';
+                        }
+                        
+                        // Remove any status effect classes that might be applied to the element
+                        const statusClasses = [
+                            'poisoned', 'badly-poisoned', 'burned', 'asleep', 'paralyzed', 
+                            'frozen', 'confused', 'cursed', 'infatuated', 'held', 'seeded',
+                            'snared', 'frozen-effect', 'burned-effect'
+                        ];
+                        
+                        statusClasses.forEach(statusClass => {
+                            characterElement.classList.remove(`status-${statusClass}`);
+                            characterElement.classList.remove(statusClass);
+                        });
+                        
+                        // Remove any visual effect classes
+                        characterElement.classList.remove('frozen-effect', 'burned-effect');
+                    });
+                    
+                    break;
+                }
+            }
+        }).catch(err => {
+            console.error("Error removing visual status effects:", err);
+        });
+        
+        // Update initiative display
+        setTimeout(() => {
+            import('./initiativeDisplay.js').then(module => {
+                if (module.updateStatusIconsInInitiative && pokemon.uniqueId) {
+                    module.updateStatusIconsInInitiative(pokemon.uniqueId);
+                }
+            }).catch(err => {
+                console.error("Error updating initiative display:", err);
+            });
+        }, 0);
+    }
+    
+    return removedEffects;
+}
+
+/**
+ * Check if a Pokemon has immunity to a specific status effect
+ * This function is used by attacks to determine if they can apply a status condition
+ * @param {Object} pokemon - The target Pokemon
+ * @param {string} statusEffectId - ID of the status effect to check
+ * @param {Object} options - Additional options
+ * @param {Object} options.attacker - The attacking Pokemon (for size comparison)
+ * @param {Object} options.targetPosition - Position of the target {x, y}
+ * @param {Object} options.attackerPosition - Position of the attacker {x, y}
+ * @returns {Promise<boolean>} - Whether the Pokemon is immune to the status effect
+ */
+export async function hasStatusImmunity(pokemon, statusEffectId, options = {}) {
+    if (!pokemon || !statusEffectId) return false;
+    
+    // Check if status effect ID is valid
+    const effectExists = Object.values(STATUS_EFFECTS).some(effect => effect.id === statusEffectId);
+    if (!effectExists) {
+        return false;
+    }
+
+    // General immunities for all effects
+    
+    // 1. Pokemon already has the effect (except for badly-poisoned upgrade)
+    if (hasStatusEffect(pokemon, statusEffectId) && statusEffectId !== 'badly-poisoned') {
+        return true;
+    }
+    
+    // 2. Dauerschlaf ability
+    if (hasPokemonAbility(pokemon, 'dauerschlaf')) {
+        return true;
+    }
+    
+    // 3. Limitschild ability with KP >= 50%
+    if (hasPokemonAbility(pokemon, 'limitschild')) {
+        const currentKP = pokemon.currentKP || 0;
+        const maxKP = pokemon.maxKP || pokemon.combatStats?.kp || 1;
+        if (currentKP >= maxKP * 0.5) {
+            return true;
+        }
+    }
+    
+    // 4. Floraschild ability in sunny weather
+    if (hasPokemonAbility(pokemon, 'floraschild')) {
+        let isSunny = false;
+        if (typeof window !== 'undefined' && window.battleWeatherState) {
+            isSunny = window.battleWeatherState.state === 'Sonne';
+        } else {
+            try {
+                const { getCurrentWeather } = await import('./weather.js');
+                const weather = getCurrentWeather();
+                isSunny = weather.state === 'Sonne';
+            } catch (error) {
+                console.error("Error checking weather:", error);
+            }
+        }
+        
+        if (isSunny) {
+            return true;
+        }
+    }
+    
+    // 5. Bodyguard or delegator buff
+    if (pokemon.buffs) {
+        if (pokemon.buffs.includes('bodyguard') || pokemon.buffs.includes('delegator')) {
+            return true;
+        }
+    }
+    
+    // Check for damaging effects immunity
+    const damagingEffects = ['poisoned', 'badly-poisoned', 'burned', 'cursed', 'seeded', 'held'];
+    if (damagingEffects.includes(statusEffectId)) {
+        if (hasPokemonAbility(pokemon, 'magieschild')) {
+            return true;
+        }
+    }
+    
+    // Specific immunities based on effect type
+    switch (statusEffectId) {
+        case 'poisoned':
+        case 'badly-poisoned':
+            return await checkPoisonImmunity(pokemon, options);
+            
+        case 'burned':
+            return checkBurnImmunity(pokemon);
+            
+        case 'asleep':
+            return await checkSleepImmunity(pokemon, options);
+            
+        case 'confused':
+            return checkConfusionImmunity(pokemon);
+            
+        case 'frozen':
+            return await checkFreezeImmunity(pokemon);
+            
+        case 'paralyzed':
+            return checkParalysisImmunity(pokemon);
+            
+        case 'seeded':
+            return checkSeedImmunity(pokemon);
+            
+        case 'held':
+            return await checkHoldImmunity(pokemon, options);
+    }
+
+    return false;
+}
+
+/**
+ * Check poison immunity (for poisoned and badly-poisoned)
+ * @param {Object} pokemon - The target Pokemon
+ * @param {Object} options - Additional options (positions, etc.)
+ * @returns {Promise<boolean>} - Whether the Pokemon is immune to poison
+ */
+async function checkPoisonImmunity(pokemon, options) {
+    // Specific abilities
+    if (hasPokemonAbility(pokemon, ['immunität', 'aufheber', 'giftheilung', 'giftwahn'])) {
+        return true;
+    }
+    
+    // Pastellhülle ability (self or within 5 spaces)
+    if (hasPokemonAbility(pokemon, 'pastellhülle')) {
+        return true;
+    }
+    
+    // Check other Pokemon within 5 spaces for Pastellhülle
+    if (options.targetPosition) {
+        const nearbyPokemon = await findPokemonWithinDistance(options.targetPosition, 5, pokemon.uniqueId);
+        for (const nearbyMon of nearbyPokemon) {
+            if (hasPokemonAbility(nearbyMon, 'pastellhülle')) {
+                return true;
+            }
+        }
+    }
+    
+    // Gift or Stahl type
+    if (pokemon.pokemonTypes) {
+        const hasImmuneType = pokemon.pokemonTypes.some(type => 
+            type.toLowerCase() === 'poison' || 
+            type.toLowerCase() === 'gift' ||
+            type.toLowerCase() === 'steel' ||
+            type.toLowerCase() === 'stahl'
+        );
+        if (hasImmuneType) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * Check burn immunity
+ * @param {Object} pokemon - The target Pokemon
+ * @returns {boolean} - Whether the Pokemon is immune to burn
+ */
+export function checkBurnImmunity(pokemon) {
+    if (pokemon.pokemonTypes) {
+        const hasImmuneType = pokemon.pokemonTypes.some(type => 
+            type.toLowerCase() === 'fire' || 
+            type.toLowerCase() === 'feuer'
+        );
+        if (hasImmuneType) {
+            return true;
+        }
+    }
+
+    return hasPokemonAbility(pokemon, ['aquahülle', 'wasserblase']);
+}
+
+/**
+ * Check sleep immunity
+ * @param {Object} pokemon - The target Pokemon
+ * @param {Object} options - Additional options (positions, etc.)
+ * @returns {Promise<boolean>} - Whether the Pokemon is immune to sleep
+ */
+async function checkSleepImmunity(pokemon, options) {
+    // Munterkeit ability
+    if (hasPokemonAbility(pokemon, 'munterkeit')) {
+        return true;
+    }
+    
+    // Zuckerhülle ability on other Pokemon within 5 spaces (NOT the target itself)
+    if (options.targetPosition) {
+        const nearbyPokemon = await findPokemonWithinDistance(options.targetPosition, 5, pokemon.uniqueId);
+        for (const nearbyMon of nearbyPokemon) {
+            if (hasPokemonAbility(nearbyMon, 'zuckerhülle')) {
+                return true;
+            }
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * Check confusion immunity
+ * @param {Object} pokemon - The target Pokemon
+ * @returns {boolean} - Whether the Pokemon is immune to confusion
+ */
+function checkConfusionImmunity(pokemon) {
+    return hasPokemonAbility(pokemon, 'tempomacher');
+}
+
+/**
+ * Check freeze immunity
+ * @param {Object} pokemon - The target Pokemon
+ * @returns {Promise<boolean>} - Whether the Pokemon is immune to freeze
+ */
+async function checkFreezeImmunity(pokemon) {
+    // Check sunny weather
+    let isSunny = false;
+    if (typeof window !== 'undefined' && window.battleWeatherState) {
+        isSunny = window.battleWeatherState.state === 'Sonne';
+    } else {
+        try {
+            const { getCurrentWeather } = await import('./weather.js');
+            const weather = getCurrentWeather();
+            isSunny = weather.state === 'Sonne';
+        } catch (error) {
+            console.error("Error checking weather:", error);
+        }
+    }
+    
+    if (isSunny) {
+        return true;
+    }
+    
+    // Magmapanzer ability
+    if (hasPokemonAbility(pokemon, 'magmapanzer')) {
+        return true;
+    }
+    
+    // Eis type
+    if (pokemon.pokemonTypes) {
+        const hasIceType = pokemon.pokemonTypes.some(type => 
+            type.toLowerCase() === 'ice' || 
+            type.toLowerCase() === 'eis'
+        );
+        if (hasIceType) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * Check paralysis immunity
+ * @param {Object} pokemon - The target Pokemon
+ * @returns {boolean} - Whether the Pokemon is immune to paralysis
+ */
+function checkParalysisImmunity(pokemon) {
+    // Flexibilität ability
+    if (hasPokemonAbility(pokemon, 'flexibilität')) {
+        return true;
+    }
+    
+    // Elektro type
+    if (pokemon.pokemonTypes) {
+        const hasElectricType = pokemon.pokemonTypes.some(type => 
+            type.toLowerCase() === 'electric' || 
+            type.toLowerCase() === 'elektro'
+        );
+        if (hasElectricType) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * Check seed immunity (for Egelsamen)
+ * @param {Object} pokemon - The target Pokemon
+ * @returns {boolean} - Whether the Pokemon is immune to seed
+ */
+function checkSeedImmunity(pokemon) {
+    // Pflanze type
+    if (pokemon.pokemonTypes) {
+        const hasGrassType = pokemon.pokemonTypes.some(type => 
+            type.toLowerCase() === 'grass' || 
+            type.toLowerCase() === 'pflanze'
+        );
+        if (hasGrassType) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * Check hold immunity (for Festgehalten)
+ * @param {Object} pokemon - The target Pokemon
+ * @param {Object} options - Additional options (attacker, etc.)
+ * @returns {Promise<boolean>} - Whether the Pokemon is immune to being held
+ */
+async function checkHoldImmunity(pokemon, options) {
+    // Size category comparison - target must be 2+ categories larger than attacker
+    if (options.attacker) {
+        try {
+            const { calculateSizeCategory } = await import('./pokemonSizeCalculator.js');
+            const targetSize = calculateSizeCategory(pokemon);
+            const attackerSize = calculateSizeCategory(options.attacker);
+            
+            if (targetSize >= attackerSize + 2) {
+                return true;
+            }
+        } catch (error) {
+            console.error("Error calculating size categories:", error);
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * Find Pokemon within a specified distance of a target position
+ * @param {Object} targetPosition - The position to search from {x, y}
+ * @param {number} maxDistance - Maximum distance in grid spaces
+ * @param {string} excludeId - ID of Pokemon to exclude from results
+ * @returns {Promise<Array>} - Array of Pokemon within distance
+ */
+async function findPokemonWithinDistance(targetPosition, maxDistance, excludeId = null) {
+    try {
+        const { getCharacterPositions } = await import('./characterPositions.js');
+        const characterPositions = getCharacterPositions();
+        
+        const nearbyPokemon = [];
+        
+        for (const charId in characterPositions) {
+            const pos = characterPositions[charId];
+            if (!pos.character || pos.isDefeated) continue;
+            if (excludeId && pos.character.uniqueId === excludeId) continue;
+            
+            // Calculate distance in grid spaces
+            const distance = Math.sqrt(
+                Math.pow(pos.x - targetPosition.x, 2) + 
+                Math.pow(pos.y - targetPosition.y, 2)
+            );
+            
+            if (distance <= maxDistance) {
+                nearbyPokemon.push(pos.character);
+            }
+        }
+        
+        return nearbyPokemon;
+    } catch (error) {
+        console.error("Error finding nearby Pokemon:", error);
+        return [];
+    }
 }

@@ -9,8 +9,8 @@ import { TERRAIN_TYPES } from './terrainGenerator.js';
 import { getTerrainAt, getMountainMovementCost, getLavaWeightMultiplier, getSnowWeightMultiplier, getSwampWeightMultiplier } from './terrainEffects.js';
 import { hasStatusEffect } from './statusEffects.js';
 import { getSnowMovementCost } from './terrainEffects.js';
-import { focusOnCharacter } from './cameraSystem.js';
 import { setPokemonSpriteState } from './pokemonOverlay.js';
+import { findPathToTarget } from './pathfinding.js';
 
 let callbackExecuted = false;
 
@@ -550,9 +550,8 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
                         // Add the frozen visual effect to the Pokemon sprite
                         setPokemonSpriteState(charId, 'frozen-effect', true);
                         
-                        // IMPORTANT: End movement immediately after this step if frozen
                         safeCallback();
-                        return; // Stop further movement processing
+                        return;
                     }
                     
                     // Continue movement if not frozen
@@ -716,4 +715,59 @@ export function processMovementWithTerrainChecks(charId, charData, path, callbac
         console.error("Error loading modules for movement processing:", error);
         safeCallback();
     });
+}
+
+/**
+ * Generate a random movement for confused Pokemon with no allies
+ * @param {number} currentX - Current x position
+ * @param {number} currentY - Current y position 
+ * @param {number} movementRange - How far the Pokemon can move
+ * @param {Object} character - The character object
+ * @param {string} characterId - Character ID for collision checking
+ * @returns {Object} - Random movement path or current position if no movement possible
+ */
+export function generateRandomMovement(currentX, currentY, movementRange, character, characterId) {    
+    // Generate random target positions within movement range
+    const possibleTargets = [];
+    
+    // Try multiple random directions and distances
+    for (let attempt = 0; attempt < 20; attempt++) {
+        // Random angle (0 to 2π)
+        const angle = Math.random() * 2 * Math.PI;
+        
+        // Random distance (1 to movementRange)
+        const distance = 1 + Math.floor(Math.random() * movementRange);
+        
+        // Calculate target position
+        const targetX = Math.round(currentX + Math.cos(angle) * distance);
+        const targetY = Math.round(currentY + Math.sin(angle) * distance);
+        
+        // Ensure within grid bounds
+        if (targetX >= 0 && targetX < GRID_SIZE && targetY >= 0 && targetY < GRID_SIZE) {
+            // Check if position is not occupied
+            if (!isTileOccupied(targetX, targetY, characterId)) {
+                // Try to find a path to this position
+                const path = findPathToTarget(
+                    currentX, currentY,
+                    targetX, targetY,
+                    movementRange,
+                    character,
+                    characterId
+                );
+                
+                if (path && path.path && path.path.length > 0) {
+                    possibleTargets.push(path);
+                }
+            }
+        }
+    }
+    
+    // If we found possible movements, pick a random one
+    if (possibleTargets.length > 0) {
+        const randomIndex = Math.floor(Math.random() * possibleTargets.length);
+        return possibleTargets[randomIndex];
+    }
+    
+    // No valid random movement found, stay in place
+    return { x: currentX, y: currentY, path: [] };
 }

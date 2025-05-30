@@ -59,9 +59,6 @@ export function updateGridSize(newSize) {
     document.documentElement.style.setProperty('--tile-size', `${TILE_SIZE}px`);
     document.documentElement.style.setProperty('--grid-size', GRID_SIZE);
     
-    console.log(`Grid size updated to ${GRID_SIZE}x${GRID_SIZE}, tile size adjusted to ${TILE_SIZE}px`);
-    console.log(`Total arena size: ${GRID_SIZE * TILE_SIZE}px x ${GRID_SIZE * TILE_SIZE}px`);
-    
     // Notify all registered callbacks about the size change
     updateCallbacks.forEach(callback => {
         try {
@@ -110,8 +107,6 @@ export function initializeConfig() {
     // Set initial CSS variables
     document.documentElement.style.setProperty('--tile-size', `${TILE_SIZE}px`);
     document.documentElement.style.setProperty('--grid-size', GRID_SIZE);
-    
-    console.log('Configuration system initialized');
 }
 
 // Strategy types

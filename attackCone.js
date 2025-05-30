@@ -5,6 +5,7 @@
 
 import { TILE_SIZE, GRID_SIZE } from './config.js';
 import { getCharacterPositions } from './characterPositions.js';
+import { calculateSizeCategory } from './pokemonSizeCalculator.js';
 
 // Store active cones for management
 const activeCones = new Map();
@@ -50,7 +51,7 @@ export function createConeIndicator(attacker, target, range, angle = 45, attackT
         // Extract height and weight from different possible locations in the data
         let height, weight;
         
-        // Try to get height/weight from statsDetails first (most reliable source)
+        // Try to get height/weight from statsDetails first (most  source)
         if (attacker.character.statsDetails) {
             height = attacker.character.statsDetails.height;
             weight = attacker.character.statsDetails.weight;
@@ -152,158 +153,280 @@ export function createConeIndicator(attacker, target, range, angle = 45, attackT
 
 /**
  * Create a standard triangle-shaped cone indicator (<180 degrees)
+ * Creates a clean cone with rounded outer edge like a slice of pizza
  */
 function createStandardConeIndicator(attacker, target, range, angle, attackType, coneId) {
-    // Calculate the cone width based on the angle and range
-    const coneWidth = range * 2 * Math.tan((angle / 2) * (Math.PI / 180)) * TILE_SIZE;
-    const coneLength = range * TILE_SIZE;
-    
     // Calculate direction vector
     const dx = target.x - attacker.x;
     const dy = target.y - attacker.y;
-    const lineAngle = Math.atan2(dy, dx) * 180 / Math.PI;
+    const baseAngle = Math.atan2(dy, dx);
     
-    // Create the cone element
-    const coneElement = document.createElement('div');
-    coneElement.className = 'attack-cone standard-cone';
+    // Create SVG element
+    const svgNS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNS, "svg");
     
-    // Add attack-specific class for styling
-    coneElement.classList.add(`${attackType}-cone`);
+    // Calculate cone dimensions
+    const coneLength = range * TILE_SIZE;
+    const halfAngleRad = (angle / 2) * (Math.PI / 180);
     
-    coneElement.id = coneId;
-    coneElement.dataset.attackType = attackType;
-    coneElement.dataset.angle = angle;
-    coneElement.dataset.range = range;
+    // Calculate the coordinates for the arc endpoints
+    const leftAngle = baseAngle - halfAngleRad;
+    const rightAngle = baseAngle + halfAngleRad;
     
-    // Position the cone at the center of the attacker's tile
-    const coneX = attacker.x * TILE_SIZE + TILE_SIZE / 2;
-    const coneY = attacker.y * TILE_SIZE + TILE_SIZE / 2;
+    const leftX = coneLength * Math.cos(leftAngle);
+    const leftY = coneLength * Math.sin(leftAngle);
+    const rightX = coneLength * Math.cos(rightAngle);
+    const rightY = coneLength * Math.sin(rightAngle);
     
-    // Set cone dimensions
-    coneElement.style.width = `${coneLength}px`;
-    coneElement.style.height = `${coneWidth}px`;
+    // Find the bounding box for our cone - make it much larger to ensure no clipping
+    const maxExtent = coneLength * 3; // Significantly larger than needed
     
-    // Position the cone
-    coneElement.style.position = 'absolute';
-    coneElement.style.left = `${coneX}px`;
-    coneElement.style.top = `${coneY}px`;
+    // Set the SVG dimensions to be very large to avoid any clipping
+    svg.setAttribute("width", maxExtent * 2);
+    svg.setAttribute("height", maxExtent * 2);
+    svg.setAttribute("viewBox", `-${maxExtent} -${maxExtent} ${maxExtent * 2} ${maxExtent * 2}`);
+    svg.setAttribute("id", coneId);
+    svg.classList.add("attack-cone", "standard-cone", `${attackType}-cone`);
+    svg.dataset.attackType = attackType;
+    svg.dataset.angle = angle;
+    svg.dataset.range = range;
     
-    // Rotate to match the direction
-    coneElement.style.transform = `translate(0, -50%) rotate(${lineAngle}deg)`;
+    // Position SVG at the attacker's tile center
+    const attackerCenterX = attacker.x * TILE_SIZE + TILE_SIZE / 2;
+    const attackerCenterY = attacker.y * TILE_SIZE + TILE_SIZE / 2;
     
-    // Ensure proper zIndex
-    coneElement.style.zIndex = '95';
+    svg.style.position = 'absolute';
+    svg.style.left = `${attackerCenterX}px`;
+    svg.style.top = `${attackerCenterY}px`;
+    svg.style.transform = 'translate(-50%, -50%)';
+    svg.style.overflow = 'visible';
+    svg.style.zIndex = '95';
+    svg.style.opacity = '0.7';
+    svg.style.pointerEvents = 'none';
     
-    // Set opacity for better visibility
-    coneElement.style.opacity = '0.7';
+    // Add explicit styling to ensure no clipping
+    svg.style.clipPath = 'none';
+    svg.style.maskImage = 'none';
     
-    return coneElement;
+    // Create the cone path
+    const path = document.createElementNS(svgNS, "path");
+    
+    // Create cone path with rounded outer edge
+    // Start at origin (0,0), line to first point, arc to second point, close back to origin
+    const arcRadius = coneLength;
+    const largeArcFlag = (angle > 180) ? 1 : 0;
+    const pathData = `M 0,0 L ${leftX},${leftY} A ${arcRadius},${arcRadius} 0 ${largeArcFlag} 1 ${rightX},${rightY} Z`;
+    path.setAttribute("d", pathData);
+    
+    // Set fill color based on attack type
+    let fillColor, strokeColor;
+    
+    switch (attackType) {
+        case 'giftpuder':
+            fillColor = "rgba(175, 106, 175, 0.3)";
+            strokeColor = "rgba(175, 106, 175, 0.6)";
+            break;
+        case 'schlafpuder':
+            fillColor = "rgba(135, 206, 250, 0.3)";
+            strokeColor = "rgba(135, 206, 250, 0.6)";
+            break;
+        case 'stachelspore':
+            fillColor = "rgba(144, 238, 144, 0.3)";
+            strokeColor = "rgba(144, 238, 144, 0.6)";
+            break;
+        case 'sandwirbel':
+            fillColor = "rgba(210, 180, 140, 0.3)";
+            strokeColor = "rgba(210, 180, 140, 0.6)";
+            break;
+        case 'eissturm':
+            fillColor = "rgba(176, 224, 230, 0.3)";
+            strokeColor = "rgba(135, 206, 235, 0.5)";
+            break;
+        default:
+            fillColor = "rgba(255, 100, 100, 0.3)";
+            strokeColor = "rgba(255, 100, 100, 0.6)";
+    }
+    
+    path.setAttribute("fill", fillColor);
+    path.setAttribute("stroke", strokeColor);
+    path.setAttribute("stroke-width", "2");
+    
+    // Add path to SVG
+    svg.appendChild(path);
+    
+    return svg;
 }
 
 /**
  * Create a circular indicator for 360-degree attacks
+ * @param {Object} attacker - Attacker position {x, y}
+ * @param {number} range - Range of the attack in tiles
+ * @param {string} attackType - Type of attack for styling
+ * @param {string} coneId - Unique ID for this cone
+ * @returns {HTMLElement} - The created circle element
  */
 function createCircleIndicator(attacker, range, attackType, coneId) {
-    // Create the circle element
-    const circleElement = document.createElement('div');
-    circleElement.className = 'attack-cone circle-cone';
+    // Create SVG element for consistency with other cone functions
+    const svgNS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNS, "svg");
     
-    // Add attack-specific class for styling
-    circleElement.classList.add(`${attackType}-cone`);
+    // Calculate circle dimensions
+    const radius = range * TILE_SIZE;
     
-    circleElement.id = coneId;
-    circleElement.dataset.attackType = attackType;
-    circleElement.dataset.angle = 360;
-    circleElement.dataset.range = range;
+    // Use the same large viewBox approach as other cone functions to avoid clipping
+    const maxExtent = radius * 3; // Much larger than needed to avoid clipping
     
-    // Calculate dimensions (diameter is 2x range)
-    const diameter = range * 2 * TILE_SIZE;
+    // Set up SVG with large dimensions to match other cone functions
+    svg.setAttribute("width", maxExtent * 2);
+    svg.setAttribute("height", maxExtent * 2);
+    svg.setAttribute("viewBox", `-${maxExtent} -${maxExtent} ${maxExtent * 2} ${maxExtent * 2}`);
+    svg.setAttribute("id", coneId);
+    svg.classList.add("attack-cone", "circle-cone", `${attackType}-cone`);
+    svg.dataset.attackType = attackType;
+    svg.dataset.angle = 360;
+    svg.dataset.range = range;
     
-    // Position at the center of the attacker's tile
-    const centerX = attacker.x * TILE_SIZE + TILE_SIZE / 2;
-    const centerY = attacker.y * TILE_SIZE + TILE_SIZE / 2;
+    // Position SVG at the attacker's tile center using the same method as other cones
+    const attackerCenterX = attacker.x * TILE_SIZE + TILE_SIZE / 2;
+    const attackerCenterY = attacker.y * TILE_SIZE + TILE_SIZE / 2;
     
-    // Set circle dimensions and position
-    circleElement.style.width = `${diameter}px`;
-    circleElement.style.height = `${diameter}px`;
-    circleElement.style.borderRadius = '50%';
-    circleElement.style.position = 'absolute';
-    circleElement.style.left = `${centerX - diameter/2}px`;
-    circleElement.style.top = `${centerY - diameter/2}px`;
+    svg.style.position = 'absolute';
+    svg.style.left = `${attackerCenterX}px`;
+    svg.style.top = `${attackerCenterY}px`;
+    svg.style.transform = 'translate(-50%, -50%)';
+    svg.style.overflow = 'visible';
+    svg.style.zIndex = '95';
+    svg.style.opacity = '0.7';
+    svg.style.pointerEvents = 'none';
     
-    // Ensure proper zIndex
-    circleElement.style.zIndex = '95';
+    // Add explicit styling to ensure no clipping (same as other cone functions)
+    svg.style.clipPath = 'none';
+    svg.style.maskImage = 'none';
     
-    // Set opacity for better visibility
-    circleElement.style.opacity = '0.7';
+    // Create a full circle using a path element (more consistent with other cone functions)
+    const path = document.createElementNS(svgNS, "path");
     
-    return circleElement;
+    // Create a path that draws a full circle
+    // We'll draw two semicircle arcs to create a complete circle
+    const pathData = `M ${-radius},0 A ${radius},${radius} 0 1 1 ${radius},0 A ${radius},${radius} 0 1 1 ${-radius},0 Z`;
+    path.setAttribute("d", pathData);
+    
+    // Set fill and stroke colors based on attack type
+    let fillColor, strokeColor;
+    
+    switch (attackType) {
+        case 'giftpuder':
+            fillColor = "rgba(175, 106, 175, 0.3)";
+            strokeColor = "rgba(175, 106, 175, 0.6)";
+            break;
+        case 'schlafpuder':
+            fillColor = "rgba(135, 206, 250, 0.3)";
+            strokeColor = "rgba(135, 206, 250, 0.6)";
+            break;
+        case 'stachelspore':
+            fillColor = "rgba(144, 238, 144, 0.3)";
+            strokeColor = "rgba(144, 238, 144, 0.6)";
+            break;
+        case 'sandwirbel':
+            fillColor = "rgba(210, 180, 140, 0.3)";
+            strokeColor = "rgba(210, 180, 140, 0.6)";
+            break;
+        case 'eissturm':
+            fillColor = "rgba(176, 224, 230, 0.3)";
+            strokeColor = "rgba(135, 206, 235, 0.5)";
+            break;
+        case 'fadenschuss':
+            fillColor = "rgba(144, 238, 144, 0.3)";
+            strokeColor = "rgba(50, 205, 50, 0.6)";
+            break;
+        case 'rasierblatt':
+            fillColor = "rgba(124, 252, 0, 0.3)";
+            strokeColor = "rgba(34, 139, 34, 0.6)";
+            break;
+        case 'explosion':
+            fillColor = "rgba(255, 69, 0, 0.4)";
+            strokeColor = "rgba(255, 69, 0, 0.8)";
+            break;
+        default:
+            fillColor = "rgba(255, 100, 100, 0.3)";
+            strokeColor = "rgba(255, 100, 100, 0.6)";
+    }
+    
+    path.setAttribute("fill", fillColor);
+    path.setAttribute("stroke", strokeColor);
+    path.setAttribute("stroke-width", "2");
+    
+    // Add the path to the SVG
+    svg.appendChild(path);
+    
+    return svg;
 }
 
 /**
  * Create a wide cone indicator for angles >= 180 degrees
+ * Uses SVG arc for proper rounded visualization
  */
 function createWideConeIndicator(attacker, target, range, angle, attackType, coneId) {
     // Create an SVG element for the wide cone
     const svgNS = "http://www.w3.org/2000/svg";
     const svg = document.createElementNS(svgNS, "svg");
     
-    // Convert range to pixels (diameter)
-    const diameter = range * 2 * TILE_SIZE;
+    // Calculate direction vector for rotation
+    const dx = target.x - attacker.x;
+    const dy = target.y - attacker.y;
+    const baseAngle = Math.atan2(dy, dx);
     
-    // Set SVG attributes
-    svg.setAttribute("width", diameter);
-    svg.setAttribute("height", diameter);
+    // Convert range to pixels
+    const radius = range * TILE_SIZE;
+    
+    // Calculate the maximum extent needed - make it significantly larger
+    const maxExtent = radius * 3; // Much larger than needed to avoid clipping
+    
+    // Create an svg that's large enough and centered on the origin
+    svg.setAttribute("width", maxExtent * 2);
+    svg.setAttribute("height", maxExtent * 2);
+    svg.setAttribute("viewBox", `-${maxExtent} -${maxExtent} ${maxExtent * 2} ${maxExtent * 2}`);
     svg.setAttribute("id", coneId);
     svg.classList.add("attack-cone", "wide-cone", `${attackType}-cone`);
     svg.dataset.attackType = attackType;
     svg.dataset.angle = angle;
     svg.dataset.range = range;
     
-    // Calc center position (center of attacker's tile)
-    const centerX = attacker.x * TILE_SIZE + TILE_SIZE / 2;
-    const centerY = attacker.y * TILE_SIZE + TILE_SIZE / 2;
+    // Position SVG at the attacker's tile center
+    const attackerCenterX = attacker.x * TILE_SIZE + TILE_SIZE / 2;
+    const attackerCenterY = attacker.y * TILE_SIZE + TILE_SIZE / 2;
     
-    // Position SVG centered on attacker
-    svg.style.position = "absolute";
-    svg.style.left = `${centerX - diameter/2}px`;
-    svg.style.top = `${centerY - diameter/2}px`;
-    svg.style.zIndex = "95";
-    svg.style.opacity = "0.7";
-    svg.style.pointerEvents = "none";
+    svg.style.position = 'absolute';
+    svg.style.left = `${attackerCenterX}px`;
+    svg.style.top = `${attackerCenterY}px`;
+    svg.style.transform = 'translate(-50%, -50%)';
+    svg.style.overflow = 'visible';
+    svg.style.zIndex = '95';
+    svg.style.opacity = '0.7';
+    svg.style.pointerEvents = 'none';
     
-    // Calculate direction vector for rotation
-    const dx = target.x - attacker.x;
-    const dy = target.y - attacker.y;
-    const directionAngle = Math.atan2(dy, dx) * 180 / Math.PI;
+    // Add explicit styling to ensure no clipping
+    svg.style.clipPath = 'none';
+    svg.style.maskImage = 'none';
     
     // Create a sector path for the cone
     const path = document.createElementNS(svgNS, "path");
     
-    // SVG sector calculations
-    const svgCenterX = diameter / 2;
-    const svgCenterY = diameter / 2;
-    const radius = diameter / 2;
-    
-    // Calculate start and end angles for the sector
-    const startAngle = -angle / 2;
-    const endAngle = angle / 2;
-    
-    // Convert to radians for calculations
-    const startRad = (startAngle * Math.PI) / 180;
-    const endRad = (endAngle * Math.PI) / 180;
+    // Calculate sector angles
+    const halfAngleRad = (angle / 2) * (Math.PI / 180);
+    const startAngle = baseAngle - halfAngleRad;
+    const endAngle = baseAngle + halfAngleRad;
     
     // Calculate points on the circle edge
-    const x1 = svgCenterX + radius * Math.cos(startRad);
-    const y1 = svgCenterY + radius * Math.sin(startRad);
-    const x2 = svgCenterX + radius * Math.cos(endRad);
-    const y2 = svgCenterY + radius * Math.sin(endRad);
+    const x1 = radius * Math.cos(startAngle);
+    const y1 = radius * Math.sin(startAngle);
+    const x2 = radius * Math.cos(endAngle);
+    const y2 = radius * Math.sin(endAngle);
     
-    // Create path data: M=moveto center, L=lineto first point, A=arc to second point, Z=closepath
-    // Arc parameters: rx ry x-rotation large-arc-flag sweep-flag x y
-    const d = `M ${svgCenterX},${svgCenterY} L ${x1},${y1} A ${radius},${radius} 0 ${
-        angle > 180 ? 1 : 0
-    },1 ${x2},${y2} Z`;
+    // Create path data for the sector
+    // Start at origin (0,0), line to first point, arc to second point, close back to origin
+    const largeArcFlag = (angle > 180) ? 1 : 0;
+    const d = `M 0,0 L ${x1},${y1} A ${radius},${radius} 0 ${largeArcFlag} 1 ${x2},${y2} Z`;
     
     path.setAttribute("d", d);
     
@@ -327,6 +450,10 @@ function createWideConeIndicator(attacker, target, range, angle, attackType, con
             fillColor = "rgba(210, 180, 140, 0.3)";
             strokeColor = "rgba(210, 180, 140, 0.6)";
             break;
+        case 'eissturm':
+            fillColor = "rgba(176, 224, 230, 0.3)";
+            strokeColor = "rgba(135, 206, 235, 0.5)";
+            break;
         default:
             fillColor = "rgba(255, 100, 100, 0.3)";
             strokeColor = "rgba(255, 100, 100, 0.6)";
@@ -338,11 +465,6 @@ function createWideConeIndicator(attacker, target, range, angle, attackType, con
     
     // Add path to SVG
     svg.appendChild(path);
-    
-    // Rotate the SVG to match target direction
-    // The -90 adjustment is because SVG 0° is East, while the game 0° might be different
-    svg.style.transformOrigin = `${svgCenterX}px ${svgCenterY}px`;
-    svg.style.transform = `rotate(${directionAngle - 90}deg)`;
     
     return svg;
 }
@@ -597,15 +719,12 @@ export function findCharactersInCone(attacker, targetPos, range, angle = 45) {
     const characterPositions = getCharacterPositions();
     const charactersInCone = [];
     
-    // Check all characters on the battlefield
     for (const charId in characterPositions) {
         const charPos = characterPositions[charId];
         
-        // Skip defeated characters
         if (charPos.isDefeated) continue;
         
-        // Check if this character is within the cone
-        if (isPositionInCone(attacker, targetPos, charPos, range, angle)) {
+        if (isCharacterInCone(attacker, targetPos, charPos.character, charPos, range, angle)) {
             charactersInCone.push({
                 id: charId,
                 character: charPos.character,
@@ -644,11 +763,9 @@ export function addConeStyles() {
             transition: opacity 0.2s ease-out;
         }
         
-        /* Standard cone styling (less than 180 degrees) */
-        .standard-cone {
-            clip-path: polygon(0 50%, 100% 0, 100% 100%);
-            background-color: rgba(255, 255, 255, 0.2);
-            border: 1px solid rgba(255, 255, 255, 0.4);
+        /* SVG cone styling */
+        .standard-cone path {
+            transition: all 0.2s;
         }
         
         /* Circle cone (360 degrees) */
@@ -678,33 +795,91 @@ export function addConeStyles() {
         }
         
         /* Default cone style */
-        .default-cone, .default-highlight {
-            background-color: rgba(255, 100, 100, 0.3);
-            border-color: rgba(255, 100, 100, 0.5);
+        .default-cone path, .default-highlight {
+            fill: rgba(255, 100, 100, 0.3);
+            stroke: rgba(255, 100, 100, 0.5);
         }
         
         /* Specific attack type cones */
-        .giftpuder-cone, .giftpuder-highlight {
-            background-color: rgba(175, 106, 175, 0.3);
-            border-color: rgba(175, 106, 175, 0.6);
+        .giftpuder-cone path, .giftpuder-highlight {
+            fill: rgba(175, 106, 175, 0.3);
+            stroke: rgba(175, 106, 175, 0.6);
         }
         
-        .schlafpuder-cone, .schlafpuder-highlight {
-            background-color: rgba(135, 206, 250, 0.3);
-            border-color: rgba(135, 206, 250, 0.6);
+        .schlafpuder-cone path, .schlafpuder-highlight {
+            fill: rgba(135, 206, 250, 0.3);
+            stroke: rgba(135, 206, 250, 0.6);
         }
         
-        .stachelspore-cone, .stachelspore-highlight {
-            background-color: rgba(144, 238, 144, 0.3);
-            border-color: rgba(144, 238, 144, 0.6);
+        .stachelspore-cone path, .stachelspore-highlight {
+            fill: rgba(144, 238, 144, 0.3);
+            stroke: rgba(144, 238, 144, 0.6);
         }
         
-        .sandwirbel-cone, .sandwirbel-highlight {
-            background-color: rgba(210, 180, 140, 0.3);
-            border-color: rgba(210, 180, 140, 0.6);
+        .sandwirbel-cone path, .sandwirbel-highlight {
+            fill: rgba(210, 180, 140, 0.3);
+            stroke: rgba(210, 180, 140, 0.6);
+            animation: sandwirbel-cone-pulse 1.5s infinite;
+        }
+        
+        @keyframes sandwirbel-cone-pulse {
+            0% { 
+                fill: rgba(210, 180, 140, 0.2);
+                stroke: rgba(210, 180, 140, 0.4);
+            }
+            50% { 
+                fill: rgba(210, 180, 140, 0.3);
+                stroke: rgba(210, 180, 140, 0.6);
+            }
+            100% { 
+                fill: rgba(210, 180, 140, 0.2);
+                stroke: rgba(210, 180, 140, 0.4);
+            }
         }
     `;
     
     // Add to document head
     document.head.appendChild(styleElement);
 }
+
+/**
+ * Get all tiles occupied by a character based on their size category
+ */
+function getCharacterOccupiedTiles(character, position) {
+    const sizeCategory = calculateSizeCategory(character) || 1;
+    const occupiedTiles = [];
+    
+    if (sizeCategory === 1) {
+        occupiedTiles.push({ x: position.x, y: position.y });
+    } else if (sizeCategory === 2) {
+        occupiedTiles.push({ x: position.x, y: position.y });
+        occupiedTiles.push({ x: position.x + 1, y: position.y });
+        occupiedTiles.push({ x: position.x, y: position.y + 1 });
+        occupiedTiles.push({ x: position.x + 1, y: position.y + 1 });
+    } else {
+        // For larger sizes, create NxN grid
+        for (let dx = 0; dx < sizeCategory; dx++) {
+            for (let dy = 0; dy < sizeCategory; dy++) {
+                occupiedTiles.push({ x: position.x + dx, y: position.y + dy });
+            }
+        }
+    }
+    
+    return occupiedTiles;
+}
+
+/**
+ * Enhanced version of isPositionInCone that accounts for character size
+ */
+export function isCharacterInCone(attacker, targetPos, character, checkPos, range, coneAngle = 45) {
+    const occupiedTiles = getCharacterOccupiedTiles(character, checkPos);
+    
+    for (const tile of occupiedTiles) {
+        if (isPositionInCone(attacker, targetPos, tile, range, coneAngle)) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+

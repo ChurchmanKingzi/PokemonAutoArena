@@ -85,15 +85,11 @@ export async function loadPokemon() {
         return pokemonCache;
     }
     
-    try {
-        console.log("Loading all Pokémon from PokeAPI...");
-        
+    try {        
         // First, fetch all base Pokémon (the current count is around 1010)
         const response = await fetch("https://pokeapi.co/api/v2/pokemon?limit=1200");
         const data = await response.json();
-        
-        console.log(`Fetched ${data.results.length} base Pokémon, now getting details...`);
-        
+                
         // Show loading message in the UI
         const loadingMessage = document.createElement('div');
         loadingMessage.id = 'pokemon-loading';
@@ -210,9 +206,6 @@ export async function loadPokemon() {
                 }
             });
         }
-        
-        // Now fetch additional variant forms (Mega evolutions and special forms)
-        console.log("Fetching additional form variants...");
         
         // Update loading message
         const loadingElement = document.getElementById('pokemon-loading');
@@ -359,12 +352,10 @@ export async function loadPokemon() {
             .sort((a, b) => a.id - b.id);
         
         pokemonLoaded = true;
-        console.log(`Successfully loaded ${pokemonCache.length} Pokémon including variants`);
-        
+
         try {
             const customMonstersIntegrator = integrateCustomMonsters();
             pokemonCache = customMonstersIntegrator(pokemonCache);
-            console.log(`Added custom monsters. Total available: ${pokemonCache.length}`);
         } catch (error) {
             console.error("Failed to add custom monsters:", error);
         }
@@ -624,6 +615,9 @@ export async function getPokemonMoves(pokemonName) {
                 let moveCone = undefined; //Default no cone
                 let moveBuff = undefined; //Default no buff/buffedStats
                 let moveBuffedStats = undefined;
+                let moveNotOffensive = undefined;
+                let moveStrahl = undefined; 
+                let moveReaction = undefined;
                 
                 // Check if move exists in config
                 if (RANGED_WEAPON_TYPES[normalizedGermanName]) {
@@ -633,7 +627,10 @@ export async function getPokemonMoves(pokemonName) {
                     moveRange = configData.range || moveRange;
                     moveCone = configData.cone || moveCone;
                     moveBuff = configData.buff || moveBuff;
-                    moveBuffedStats = configData.moveBuffedStats || moveBuffedStats;
+                    moveBuffedStats = configData.buffedStats || moveBuffedStats;
+                    moveNotOffensive = configData.notOffensive || moveNotOffensive;
+                    moveStrahl = configData.strahl || moveStrahl; 
+                    moveReaction = configData.reaction || moveReaction;
                     
                     // Only set effect if it exists in config
                     if (configData.effect) {
@@ -659,7 +656,10 @@ export async function getPokemonMoves(pokemonName) {
                     effect: moveEffect, // Use effect from config (null if not found)
                     cone: moveCone,
                     buff: moveBuff,
-                    buffedStats: moveBuffedStats
+                    buffedStats: moveBuffedStats,
+                    notOffensive: moveNotOffensive,
+                    strahl: moveStrahl,
+                    reaction: moveReaction
                 };
 
                 // Only add buff properties if they exist in the config

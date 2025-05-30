@@ -1,7 +1,6 @@
 /**
  * Camera system for Pokemon battle simulation
  * Provides zoom and pan functionality to follow battle action
- * Updated to always show exactly 9 tiles horizontally for consistent zoom experience
  */
 
 import { TILE_SIZE, GRID_SIZE } from './config.js';
@@ -9,7 +8,7 @@ import { getCharacterPositions } from './characterPositions.js';
 
 // Configuration
 export const DEFAULT_ZOOM = 1;
-export const TILES_TO_SHOW_HORIZONTALLY = 11; // Always show this many tiles horizontally
+export const TILES_TO_SHOW_HORIZONTALLY = 15; // Always show this many tiles horizontally
 export let BATTLE_ZOOM = 1; // Will be calculated during initialization
 
 // Camera state
@@ -42,7 +41,6 @@ function calculateZoomForTileCount(tilesToShow = TILES_TO_SHOW_HORIZONTALLY) {
     // Calculate zoom to fit exactly this many tiles in the container width
     const zoom = containerWidth / tilesWidth;
     
-    console.log(`Calculated zoom for ${tilesToShow} tiles: ${zoom} (container: ${containerWidth}px, tiles width: ${tilesWidth}px)`);
     return zoom;
 }
 
@@ -98,7 +96,6 @@ export function initializeCamera() {
     // Set CSS variable
     document.documentElement.style.setProperty('--camera-zoom', currentZoom);
     
-    // IMPORTANT: Immediately set up camera to show entire battlefield
     // This ensures the battlefield is visible from the start
     setTimeout(() => {
         // Center the battlefield
@@ -120,7 +117,6 @@ export function initializeCamera() {
         updateCameraTransform();
     }, 0);
     
-    console.log("Camera system initialized with BATTLE_ZOOM:", BATTLE_ZOOM);
     return true;
 }
 
@@ -445,6 +441,70 @@ export function getCurrentBattleZoom() {
  */
 export function recalculateBattleZoom() {
     BATTLE_ZOOM = calculateZoomForTileCount(TILES_TO_SHOW_HORIZONTALLY);
-    console.log("Recalculated BATTLE_ZOOM:", BATTLE_ZOOM);
     return BATTLE_ZOOM;
+}
+
+/**
+ * Follow a cone attack by moving the camera in the cone's direction
+ * @param {Object} attacker - The attacker position
+ * @param {Object} target - The target direction
+ * @param {number} range - Range of the cone
+ * @param {number} coneAngle - Angle of the cone in degrees
+ * @param {number} duration - Transition duration in ms
+ * @returns {Promise} - Promise that resolves when focusing is complete
+ */
+export function focusOnConeAttack(attacker, target, range, coneAngle, duration = 800) {
+    // Don't move camera for 360-degree attacks (full circles)
+    if (coneAngle >= 360) {
+        return Promise.resolve();
+    }
+    
+    // Calculate direction vector from attacker to target
+    const dx = target.x - attacker.x;
+    const dy = target.y - attacker.y;
+    
+    // Handle case where target is same as attacker
+    if (dx === 0 && dy === 0) {
+        return Promise.resolve();
+    }
+    
+    // Normalize the direction vector
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    const dirX = dx / distance;
+    const dirY = dy / distance;
+    
+    // Calculate the focus point: move half the cone's range in the cone's direction
+    const focusDistance = range * 0.5;
+    const focusX = attacker.x + (dirX * focusDistance);
+    const focusY = attacker.y + (dirY * focusDistance);
+    
+    // Convert to pixel coordinates for the camera system
+    const centerX = (focusX + 0.5) * TILE_SIZE;
+    const centerY = (focusY + 0.5) * TILE_SIZE;
+    
+    // Use the consistent battle zoom
+    const targetZoom = BATTLE_ZOOM;
+    
+    // Update global CSS variable for camera zoom
+    document.documentElement.style.setProperty('--camera-zoom', targetZoom);
+    
+    // Move camera to the focus point
+    return zoomToPoint(centerX, centerY, targetZoom, duration);
+}
+
+export function focusOnCharacterSmooth(charId, duration = 500) {
+    const characterPositions = getCharacterPositions();
+    const charData = characterPositions[charId];
+    
+    if (!charData) {
+        console.warn(`Cannot focus on character ${charId}, not found`);
+        return Promise.resolve();
+    }
+    
+    const centerX = (charData.x + 0.5) * TILE_SIZE;
+    const centerY = (charData.y + 0.5) * TILE_SIZE;
+    const targetZoom = BATTLE_ZOOM;
+    
+    document.documentElement.style.setProperty('--camera-zoom', targetZoom);
+    return zoomToPoint(centerX, centerY, targetZoom, duration);
 }

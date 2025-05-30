@@ -8,6 +8,7 @@ import { createCharacterTooltip } from './tooltip.js';
 import { getSortedCharactersDisplay } from './initiative.js';
 import { getTrainers } from './teamManager.js';
 import { getTrainerClassById } from './classService.js';
+import { hasDoubleTurns, getTurnsTakenThisRound } from './doubleTurnSystem.js';
 
 // Global tooltip container
 let globalTooltip = null;
@@ -432,6 +433,11 @@ export function displayInitiativeOrder(sortedCharacterList = null) {
         if (isDefeated) {
             characterItem.classList.add('defeated');
         }
+
+        // Check if the character has double turns and add styling
+        if (!isDefeated && hasDoubleTurns(entry.character.uniqueId)) {
+            characterItem.classList.add('has-double-turns');
+        }
         
         // Initialize current KP if not set
         if (!entry.character.currentKP && entry.character.currentKP !== 0) {
@@ -515,7 +521,7 @@ export function displayInitiativeOrder(sortedCharacterList = null) {
         
         infoContainer.appendChild(spriteImg);
         
-        // Add character name
+        // Add character name with double turn indicator
         const nameSpan = document.createElement('span');
         nameSpan.className = 'initiative-name';
         nameSpan.textContent = entry.character.name;
@@ -524,6 +530,31 @@ export function displayInitiativeOrder(sortedCharacterList = null) {
         if (isDefeated) {
             nameSpan.style.textDecoration = 'line-through';
             nameSpan.style.color = '#666';
+        }
+        
+        // Add double turn indicator if applicable (and not defeated)
+        if (!isDefeated && hasDoubleTurns(entry.character.uniqueId)) {
+            const doubleTurnIndicator = document.createElement('span');
+            doubleTurnIndicator.className = 'double-turn-indicator';
+            doubleTurnIndicator.innerHTML = '⚡⚡';
+            doubleTurnIndicator.title = 'Erhält 2 Züge pro Runde';
+            doubleTurnIndicator.style.color = '#ffd700';
+            doubleTurnIndicator.style.fontSize = '10px';
+            doubleTurnIndicator.style.marginLeft = '4px';
+            doubleTurnIndicator.style.textShadow = '0 0 2px #ff0';
+            nameSpan.appendChild(doubleTurnIndicator);
+            
+            // Show turn progress for double turn Pokemon
+            const turnProgress = getTurnsTakenThisRound(entry.character.uniqueId);
+            if (turnProgress > 0) {
+                const progressIndicator = document.createElement('span');
+                progressIndicator.className = 'turn-progress-indicator';
+                progressIndicator.style.fontSize = '9px';
+                progressIndicator.style.marginLeft = '2px';
+                progressIndicator.style.color = '#888';
+                progressIndicator.textContent = `(${turnProgress}/2)`;
+                nameSpan.appendChild(progressIndicator);
+            }
         }
         
         infoContainer.appendChild(nameSpan);
@@ -874,6 +905,34 @@ function updateInitiativeStyles() {
             border: 2px dashed #ddd;
             border-radius: 5px;
             margin: 20px 0;
+        }
+
+        /* Double turn indicators */
+        .double-turn-indicator {
+            animation: double-turn-glow 2s infinite;
+        }
+        
+        @keyframes double-turn-glow {
+            0% { text-shadow: 0 0 2px #ffd700; }
+            50% { text-shadow: 0 0 6px #ffd700, 0 0 8px #ffff00; }
+            100% { text-shadow: 0 0 2px #ffd700; }
+        }
+        
+        .turn-progress-indicator {
+            font-weight: normal;
+            opacity: 0.8;
+        }
+        
+        /* Enhanced styling for double turn Pokemon */
+        .initiative-item.has-double-turns:not(.defeated) {
+            background: linear-gradient(135deg, #f5f5f5 0%, #fff9e6 100%);
+            border-color: #ffd700;
+            box-shadow: 0 0 3px rgba(255, 215, 0, 0.3);
+        }
+        
+        .initiative-item.has-double-turns:hover:not(.defeated) {
+            background: linear-gradient(135deg, #e9e9e9 0%, #fff3d9 100%);
+            box-shadow: 0 3px 8px rgba(255, 215, 0, 0.4);
         }
     `;
     

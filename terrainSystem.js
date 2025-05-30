@@ -11,10 +11,7 @@ import { getBattlefieldConfig } from './battlefieldConfig.js';
 export function initializeTerrainSystem(teamAreas) {
     // Get the current battlefield configuration
     const config = getBattlefieldConfig();
-    
-    console.log("Initializing terrain system with config:", config);
-    console.log("Using team areas:", teamAreas);
-    
+        
     // Generate terrain based on the selected scenario
     const terrainGrid = generateTerrain(
         config.scenario,
@@ -30,7 +27,6 @@ export function initializeTerrainSystem(teamAreas) {
             }
         }
     }
-    console.log(`Generated terrain with ${mountainCount} mountain tiles`);
     
     // IMPORTANT: Store the generated grid in the terrainGenerator's state
     setTerrainGrid(terrainGrid);
@@ -66,9 +62,7 @@ export function getTerrainAt(x, y) {
 export function updateTerrainWithTeamAreas(teamAreas) {
     // Get the current battlefield configuration
     const config = getBattlefieldConfig();
-    
-    console.log("Updating terrain system with new team areas:", teamAreas);
-    
+        
     // Generate terrain based on the selected scenario
     const terrainGrid = generateTerrain(
         config.scenario,

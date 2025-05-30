@@ -16,7 +16,6 @@ let swimmingRegistry = {
  */
 export function resetSwimmingRegistry() {
     swimmingRegistry = {};
-    console.log("Swimming registry reset.");
 }
 
 /**
@@ -26,7 +25,6 @@ export function resetSwimmingRegistry() {
 export function resetSwimmingRegistryForTurn(turnNumber) {
     // Clear only the registry for this turn
     swimmingRegistry[turnNumber] = {};
-    console.log(`Swimming registry reset for turn ${turnNumber}.`);
 }
 
 /**
@@ -49,7 +47,6 @@ export function markSwimmingCheckPassed(charId, turnNumber) {
         swimmingRegistry[turnNumber] = {};
     }
     swimmingRegistry[turnNumber][charId] = true;
-    console.log(`Character ${charId} marked as passed swimming check for turn ${turnNumber}`);
 }
 
 /**
@@ -367,9 +364,7 @@ export function getSnowMovementCost(character) {
  * @param {Object} character - The character/Pokemon
  * @returns {Object} - Message and whether the effect was applied
  */
-export function applySnowEffect(character) {
-    console.log("Snow effect check triggered");
-    
+export function applySnowEffect(character) {    
     // Skip if character is null
     if (!character) {
 
@@ -391,12 +386,10 @@ export function applySnowEffect(character) {
     
     // 10% chance to apply frozen status
     if (Math.random() < 0.1) {
-        console.log("TEEEEEEEEEEEST");
         // Apply frozen status
         const applied = addStatusEffect(character, 'frozen');
         
         if (applied) {
-            console.log(`${character.name} was frozen by snow!`);
             return { 
                 applied: true, 
                 message: `${character.name} wird durch den Schnee eingefroren!` 
