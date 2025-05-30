@@ -4,14 +4,10 @@
  */
 
 import { TILE_SIZE } from '../config.js';
-import { addStatusEffect, hasStatusEffect } from '../statusEffects.js';
-import { logBattleEvent } from '../battleLog.js';
-import { 
-    createConeIndicator, 
-    removeConeIndicator, 
-    findCharactersInCone,
-    isPositionInCone 
-} from '../attackCone.js';
+import { hasStatusEffect, hasStatusImmunity } from '../statusEffects.js';
+import { createConeIndicator, removeConeIndicator, findCharactersInCone,isPositionInCone } from '../attackCone.js';
+import { addStatusEffect } from '../statusEffects.js';
+import { applyVisualHitEffect } from '../coneHits.js';
 
 // Constants
 const DEFAULT_CONE_ANGLE = 45; // The angle of the Stachelspore cone in degrees
@@ -52,6 +48,20 @@ export class StachelsporeAttack {
         this.creationTime = Date.now();
         this.statusApplied = false;
         
+        // Handle miss case - calculate a new direction
+        if (!this.isHit) {
+            // Display miss message over the original target
+            import('../damageNumbers.js').then(module => {
+                module.createMissMessage(this.target);
+            });
+            
+            // Calculate effective target direction (missed angle)
+            this.effectiveTarget = this.calculateMissDirection();
+        } else {
+            // If hit, use the original target direction
+            this.effectiveTarget = this.target;
+        }
+        
         // Create the cone and particles
         this.createVisualElements();
         
@@ -64,13 +74,49 @@ export class StachelsporeAttack {
     }
     
     /**
-     * Create the visual elements for stun spore
+     * Calculate a random direction for a missed cone attack
+     * that ensures the original target is NOT in the cone
+     * @returns {Object} - New target direction {x, y}
      */
+    calculateMissDirection() {
+        // Original direction vector from attacker to target
+        const dx = this.target.x - this.attacker.x;
+        const dy = this.target.y - this.attacker.y;
+        const originalDistance = Math.sqrt(dx * dx + dy * dy);
+        
+        // Original angle (in radians)
+        const originalAngle = Math.atan2(dy, dx);
+        
+        // Cone half-angle in radians
+        const coneHalfAngle = (this.coneAngle / 2) * (Math.PI / 180);
+        
+        // Generate a random angle that's outside the cone angle
+        // to ensure the original target is NOT in the new cone
+        let offsetAngle;
+        if (Math.random() < 0.5) {
+            // Miss to the left
+            offsetAngle = coneHalfAngle + (Math.random() * Math.PI / 4); // 0-45 degrees outside cone
+        } else {
+            // Miss to the right
+            offsetAngle = -coneHalfAngle - (Math.random() * Math.PI / 4); // 0-45 degrees outside cone
+        }
+        
+        // Calculate new direction
+        const newAngle = originalAngle + offsetAngle;
+        
+        // Calculate new target position at the same distance
+        const newX = this.attacker.x + Math.cos(newAngle) * originalDistance;
+        const newY = this.attacker.y + Math.sin(newAngle) * originalDistance;
+        
+        return { x: newX, y: newY };
+    }
+    
+    // Update createVisualElements to use effectiveTarget
     createVisualElements() {
         // First create the cone indicator
         this.coneElement = createConeIndicator(
             this.attacker, 
-            this.target, 
+            this.effectiveTarget, // Use effective target
             this.range, 
             this.coneAngle, 
             'stachelspore',
@@ -148,7 +194,7 @@ export class StachelsporeAttack {
      */
     getRandomPositionInCone() {
         const attacker = this.attacker;
-        const targetDirection = this.target;
+        const targetDirection = this.effectiveTarget;
         const range = this.range;
         
         // Try random positions until we find one in the cone
@@ -189,116 +235,52 @@ export class StachelsporeAttack {
     
     /**
      * Find all valid targets in the cone
-     * @returns {Array} - Array of valid targets
+     * @returns {Promise<Array>} - Array of valid targets
      */
-    findValidTargets() {
+    async findValidTargets() {
         // Get all characters in the cone
         const charactersInCone = findCharactersInCone(
             this.attacker, 
-            this.target, 
+            this.effectiveTarget, 
             this.range, 
             this.coneAngle
         );
         
-        // Filter out invalid targets:
-        // - Attacker (self)
-        // - Grass-type Pokemon
-        // - Already paralyzed Pokemon
-        // - Pokemon with the "Flexibilität" ability
-        const validTargets = charactersInCone.filter(target => {
+        // Filter out invalid targets using the new status immunity system
+        const validTargets = [];
+        
+        for (const target of charactersInCone) {
             // Skip attacker
-            if (target.character === this.attacker.character) return false;
+            if (target.character === this.attacker.character) continue;
             
-            // Check if already has the paralyzed status
-            if (hasStatusEffect(target.character, 'paralyzed')) {
-                return false;
+            // Check immunity using the comprehensive immunity system
+            const isImmune = await hasStatusImmunity(target.character, 'paralyzed', {
+                attacker: this.attacker.character,
+                targetPosition: { x: target.x, y: target.y },
+                attackerPosition: { x: this.attacker.x, y: this.attacker.y }
+            });
+            
+            if (!isImmune && !(types.includes('grass') || types.includes('pflanze'))) {
+                validTargets.push(target);
             }
-            
-            const pokemon = target.character;
-            
-            // Check for Grass type immunity
-            if (pokemon.pokemonTypes) {
-                const types = pokemon.pokemonTypes.map(type => 
-                    typeof type === 'string' ? type.toLowerCase() : ""
-                );
-                
-                // Grass types are immune
-                if (types.includes('grass') || types.includes('pflanze')) {
-                    return false;
-                }
-            }
-            
-            // Check for Flexibilität (Limber) ability
-            if (this.hasFlexibilitaetAbility(pokemon)) {
-                return false;
-            }
-            
-            return true;
-        });
+        }
         
         return validTargets;
     }
     
     /**
-     * Check if a Pokemon has the Flexibilität (Limber) ability
-     * @param {Object} pokemon - Pokemon to check
-     * @returns {boolean} - Whether the Pokemon has Flexibilität
-     */
-    hasFlexibilitaetAbility(pokemon) {
-        if (!pokemon) return false;
-        
-        const immuneAbilities = ['flexibilität', 'limber'];
-        
-        // Check in abilities array
-        if (pokemon.abilities && Array.isArray(pokemon.abilities)) {
-            for (const ability of pokemon.abilities) {
-                if (ability && ability.name) {
-                    const lowerName = ability.name.toLowerCase();
-                    if (immuneAbilities.some(a => lowerName.includes(a))) {
-                        return true;
-                    }
-                }
-                
-                if (ability && ability.description) {
-                    const lowerDesc = ability.description.toLowerCase();
-                    if (immuneAbilities.some(a => lowerDesc.includes(a))) {
-                        return true;
-                    }
-                }
-            }
-        }
-        
-        // Check in ability property
-        if (pokemon.ability) {
-            if (typeof pokemon.ability === 'string') {
-                const lowerName = pokemon.ability.toLowerCase();
-                if (immuneAbilities.some(a => lowerName.includes(a))) {
-                    return true;
-                }
-            } else if (pokemon.ability.name) {
-                const lowerName = pokemon.ability.name.toLowerCase();
-                if (immuneAbilities.some(a => lowerName.includes(a))) {
-                    return true;
-                }
-            }
-        }
-        
-        return false;
-    }
-    
-    /**
      * Apply paralysis status to valid targets
      */
-    applyParalysisStatus() {
+    async applyParalysisStatus() {
         if (this.statusApplied || this.removed) return;
         
         // Mark status as applied
         this.statusApplied = true;
         
         // Find valid targets
-        const validTargets = this.findValidTargets();
+        const validTargets = await this.findValidTargets();
         
-        // Apply paralysis status to each valid target
+        // Apply paralysis to each valid target
         validTargets.forEach(target => {
             const applied = addStatusEffect(target.character, 'paralyzed', {
                 sourceId: this.attacker.character.uniqueId,
@@ -306,17 +288,13 @@ export class StachelsporeAttack {
             });
             
             if (applied) {
-                // Apply visual flash effect to the target
-                this.applyParalysisFlashEffect(target.id);
+                // Apply visual hit effect
+                applyVisualHitEffect(target.id, 'paralysis');
                 
-                logBattleEvent(`${target.character.name} wurde durch Stachelspore von ${this.attacker.character.name} paralysiert!`);
+                // Apply paralysis flash effect
+                this.applyParalysisFlashEffect(target.id);
             }
         });
-        
-        // If no valid targets were found, log that
-        if (validTargets.length === 0) {
-            logBattleEvent(`Stachelspore von ${this.attacker.character.name} hat keine Wirkung!`);
-        }
     }
     
     /**
@@ -442,6 +420,19 @@ export function addStachelsporeStyles() {
             pointer-events: none;
         }
         
+        /* Ensure the SVG container has no background or border */
+        .attack-cone.stachelspore-cone {
+            background: none !important;
+            border: none !important;
+        }
+        
+        /* Style for Stachelspore cone - target only path and circle elements */
+        .attack-cone.stachelspore-cone path,
+        .attack-cone.stachelspore-cone circle {
+            fill: rgba(144, 238, 144, 0.3);
+            stroke: rgba(144, 238, 144, 0.6);
+        }
+        
         /* Floating animation for particles */
         @keyframes stachelsporeFloat {
             0% {
@@ -478,66 +469,65 @@ export function addStachelsporeStyles() {
 /**
  * Check if target is valid for Stachelspore
  * @param {Object} target - Target to check
- * @returns {boolean} - Whether target is valid
+ * @param {Object} attacker - The attacking Pokemon (optional)
+ * @param {Object} targetPosition - Position of the target (optional)
+ * @param {Object} attackerPosition - Position of the attacker (optional)
+ * @returns {Promise<boolean>} - Whether target is valid
  */
-export function isValidStachelsporeTarget(target) {
+export async function isValidStachelsporeTarget(target, attacker = null, targetPosition = null, attackerPosition = null) {
     // If target doesn't exist, it's not valid
     if (!target || !target.character) return false;
     
-    // Check if target already has paralysis status
-    if (hasStatusEffect(target.character, 'paralyzed')) {
-        return false;
-    }
+    // Use the comprehensive immunity system
+    const isImmune = await hasStatusImmunity(target.character, 'paralyzed', {
+        attacker: attacker,
+        targetPosition: targetPosition,
+        attackerPosition: attackerPosition
+    });
     
-    // Check for Grass type immunity
-    if (target.character.pokemonTypes) {
-        const types = target.character.pokemonTypes.map(type => 
-            typeof type === 'string' ? type.toLowerCase() : ""
-        );
+    return !isImmune;
+}
+
+/**
+ * Apply Stachelspore effects (paralysis status)
+ */
+export async function applyStachelsporeEffects(attacker, validTargets, attack, results) {
+    let successfulTargets = 0;
+    
+    // Filter targets again for immunity (in case this is called independently)
+    const finalTargets = [];
+    for (const target of validTargets) {
+        const isImmune = await hasStatusImmunity(target.character, 'paralyzed', {
+            attacker: attacker.character,
+            targetPosition: { x: target.x, y: target.y },
+            attackerPosition: { x: attacker.x, y: attacker.y }
+        });
         
-        // Grass types are immune
-        if (types.includes('grass') || types.includes('pflanze')) {
-            return false;
+        if (!isImmune) {
+            finalTargets.push(target);
         }
     }
     
-    // Check for Flexibilität ability
-    const pokemon = target.character;
-    const immuneAbilities = ['flexibilität', 'limber'];
-    
-    // Check in abilities array
-    if (pokemon.abilities && Array.isArray(pokemon.abilities)) {
-        for (const ability of pokemon.abilities) {
-            if (ability && ability.name) {
-                const lowerName = ability.name.toLowerCase();
-                if (immuneAbilities.some(a => lowerName.includes(a))) {
-                    return false;
-                }
-            }
+    finalTargets.forEach(target => {
+        const applied = addStatusEffect(target.character, 'paralyzed', {
+            sourceId: attacker.character.uniqueId,
+            sourceName: attacker.character.name
+        });
+        
+        if (applied) {
+            successfulTargets++;
+            applyVisualHitEffect(target.id, 'paralysis');
+            results.messages.push(`${target.character.name} wurde durch Stachelspore von ${attacker.character.name} paralysiert!`);
             
-            if (ability && ability.description) {
-                const lowerDesc = ability.description.toLowerCase();
-                if (immuneAbilities.some(a => lowerDesc.includes(a))) {
-                    return false;
-                }
-            }
+            results.effects.push({
+                targetId: target.id,
+                type: 'status',
+                status: 'paralyzed'
+            });
         }
-    }
+    });
     
-    // Check in ability property
-    if (pokemon.ability) {
-        if (typeof pokemon.ability === 'string') {
-            const lowerName = pokemon.ability.toLowerCase();
-            if (immuneAbilities.some(a => lowerName.includes(a))) {
-                return false;
-            }
-        } else if (pokemon.ability.name) {
-            const lowerName = pokemon.ability.name.toLowerCase();
-            if (immuneAbilities.some(a => lowerName.includes(a))) {
-                return false;
-            }
-        }
+    if (successfulTargets === 0) {
+        results.messages.push(`Stachelspore von ${attacker.character.name} hat keine Wirkung!`);
     }
-    
-    return true;
 }

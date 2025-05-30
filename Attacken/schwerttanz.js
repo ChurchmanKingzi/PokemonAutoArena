@@ -1,5 +1,5 @@
 import { getCharacterPositions, updateCharacterPosition } from '../characterPositions.js';
-import { TILE_SIZE } from '../config.js';
+import { getPokemonSprite } from '../pokemonOverlay.js';
 
 /**
  * Animate the Schwerttanz move with actual Pokemon movement
@@ -18,9 +18,17 @@ export function animateSchwerttanz(charId, character) {
             return;
         }
         
+        // Get the Pokemon sprite from the overlay system
+        const pokemonSprite = getPokemonSprite(charId);
+        if (!pokemonSprite) {
+            console.error("Pokemon sprite not found for Schwerttanz animation");
+            resolve();
+            return;
+        }
+        
         // Find the battlefield grid
-        const battlefieldElement = document.querySelector('.battlefield-grid');
-        if (!battlefieldElement) {
+        const battlefieldGrid = document.querySelector('.battlefield-grid');
+        if (!battlefieldGrid) {
             console.error("Battlefield grid not found for Schwerttanz animation");
             resolve();
             return;
@@ -32,8 +40,8 @@ export function animateSchwerttanz(charId, character) {
             styleElement.id = 'schwerttanz-styles';
             styleElement.textContent = `
                 @keyframes schwerttanz-sword-spin {
-                    0% { transform: rotate(0deg) translate(-50%, -50%); }
-                    100% { transform: rotate(360deg) translate(-50%, -50%); }
+                    0% { transform: translate(-50%, -50%) rotate(0deg); }
+                    100% { transform: translate(-50%, -50%) rotate(360deg); }
                 }
                 
                 @keyframes schwerttanz-glow-pulse {
@@ -42,23 +50,21 @@ export function animateSchwerttanz(charId, character) {
                     100% { box-shadow: 0 0 15px 5px rgba(255, 0, 0, 0.4); }
                 }
                 
-                .schwerttanz-container {
+                .schwerttanz-overlay {
                     position: absolute;
-                    width: ${TILE_SIZE * 3}px;
-                    height: ${TILE_SIZE * 3}px;
                     pointer-events: none;
-                    z-index: 1000;
+                    z-index: 2000;
+                    transform-origin: center center;
                 }
                 
                 .schwerttanz-glow {
                     position: absolute;
-                    width: ${TILE_SIZE * 1.5}px;
-                    height: ${TILE_SIZE * 1.5}px;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
                     background-color: rgba(255, 0, 0, 0.2);
                     border-radius: 50%;
-                    left: 50%;
-                    top: 50%;
-                    transform: translate(-50%, -50%);
                     animation: schwerttanz-glow-pulse 2s infinite;
                 }
                 
@@ -66,8 +72,6 @@ export function animateSchwerttanz(charId, character) {
                     position: absolute;
                     width: 30px;
                     height: 30px;
-                    left: 50%;
-                    top: 50%;
                     font-size: 24px;
                     line-height: 30px;
                     text-align: center;
@@ -79,58 +83,66 @@ export function animateSchwerttanz(charId, character) {
             document.head.appendChild(styleElement);
         }
         
-        // Save the original position for later
+        // Save the original position and sprite properties
         const originalX = position.x;
         const originalY = position.y;
+        const originalTransform = pokemonSprite.style.transform;
+        const originalTransition = pokemonSprite.style.transition;
         
-        // Calculate position for effects
-        const posX = (position.x * TILE_SIZE) + (TILE_SIZE / 2);
-        const posY = (position.y * TILE_SIZE) + (TILE_SIZE / 2);
+        // Get the exact size and position of the Pokemon sprite
+        const spriteBounds = pokemonSprite.getBoundingClientRect();
+        const spriteWidth = spriteBounds.width;
+        const spriteHeight = spriteBounds.height;
         
-        // Create the effect container for swords
-        const effectContainer = document.createElement('div');
-        effectContainer.className = 'schwerttanz-container';
-        effectContainer.style.left = `${posX}px`;
-        effectContainer.style.top = `${posY}px`;
+        // Create the effect overlay that will be positioned exactly like the Pokemon sprite
+        const effectOverlay = document.createElement('div');
+        effectOverlay.className = 'schwerttanz-overlay';
+        effectOverlay.style.width = `${spriteWidth}px`;
+        effectOverlay.style.height = `${spriteHeight}px`;
+        effectOverlay.style.left = pokemonSprite.style.left;
+        effectOverlay.style.top = pokemonSprite.style.top;
+        
+        // Copy the transform exactly from the Pokemon sprite
+        effectOverlay.style.transform = originalTransform;
         
         // Add glow effect
         const glowEffect = document.createElement('div');
         glowEffect.className = 'schwerttanz-glow';
-        effectContainer.appendChild(glowEffect);
+        effectOverlay.appendChild(glowEffect);
         
-        // Create sword emoji at four positions around the character
+        // Create sword emojis at positions around the center
         const swordPositions = [
-            { angle: 0, offsetX: 50, offsetY: -50 },
-            { angle: 90, offsetX: 50, offsetY: 50 },
-            { angle: 180, offsetX: -50, offsetY: 50 },
-            { angle: 270, offsetX: -50, offsetY: -50 }
+            { top: '0%', left: '50%' },      // top
+            { top: '50%', left: '100%' },    // right
+            { top: '100%', left: '50%' },    // bottom
+            { top: '50%', left: '0%' }       // left
         ];
         
         swordPositions.forEach((pos, index) => {
             const sword = document.createElement('div');
             sword.className = 'schwerttanz-sword';
             sword.innerHTML = '⚔️';
-            sword.style.transform = `translate(${pos.offsetX}px, ${pos.offsetY}px) rotate(${pos.angle}deg)`;
+            sword.style.top = pos.top;
+            sword.style.left = pos.left;
+            sword.style.transform = 'translate(-50%, -50%)';
             sword.style.animationDelay = `${index * 0.1}s`;
-            effectContainer.appendChild(sword);
+            effectOverlay.appendChild(sword);
         });
         
-        // Append to battlefield
-        battlefieldElement.appendChild(effectContainer);
-        
-        // Create red flash effect
+        // Add red flash effect
         const flashEffect = document.createElement('div');
         flashEffect.style.position = 'absolute';
-        flashEffect.style.left = `${posX}px`;
-        flashEffect.style.top = `${posY}px`;
-        flashEffect.style.width = `${TILE_SIZE * 2}px`;
-        flashEffect.style.height = `${TILE_SIZE * 2}px`;
+        flashEffect.style.top = '50%';
+        flashEffect.style.left = '50%';
+        flashEffect.style.transform = 'translate(-50%, -50%)';
+        flashEffect.style.width = '100%';
+        flashEffect.style.height = '100%';
         flashEffect.style.backgroundColor = 'rgba(255, 0, 0, 0.3)';
         flashEffect.style.borderRadius = '50%';
-        flashEffect.style.transform = 'translate(-50%, -50%)';
-        flashEffect.style.zIndex = '990';
+        flashEffect.style.zIndex = '1990';
         flashEffect.style.opacity = '0';
         flashEffect.style.animation = 'flash-opacity 0.5s ease-in-out';
+        effectOverlay.appendChild(flashEffect);
         
         // Add flash animation if not present
         if (!document.querySelector('style[data-flash-animation]')) {
@@ -146,10 +158,11 @@ export function animateSchwerttanz(charId, character) {
             document.head.appendChild(flashStyle);
         }
         
-        battlefieldElement.appendChild(flashEffect);
+        // Append overlay to the battlefield grid
+        battlefieldGrid.appendChild(effectOverlay);
         
         // Define a sequence of moves to create the schwerttanz effect
-        // This will actually move the Pokemon sprite in the DOM
+        // This sequence is now relative to the Pokemon's original position
         const moveSequence = [
             { dx: -1, dy: -1 }, // top-left
             { dx: 1, dy: 1 },   // bottom-right
@@ -174,9 +187,13 @@ export function animateSchwerttanz(charId, character) {
             const newX = originalX + move.dx;
             const newY = originalY + move.dy;
             
-            // Update character position in the DOM using the existing system
-            // This ensures the Pokemon sprite actually moves
+            // Update character position in the DOM
             updateCharacterPosition(charId, { x: newX, y: newY });
+            
+            // Update the effect overlay position to match
+            effectOverlay.style.left = pokemonSprite.style.left;
+            effectOverlay.style.top = pokemonSprite.style.top;
+            effectOverlay.style.transform = pokemonSprite.style.transform;
             
             currentIndex++;
             
@@ -184,6 +201,8 @@ export function animateSchwerttanz(charId, character) {
             if (currentIndex >= moveSequence.length) {
                 // Make sure we end at the original position
                 updateCharacterPosition(charId, { x: originalX, y: originalY });
+                effectOverlay.style.left = pokemonSprite.style.left;
+                effectOverlay.style.top = pokemonSprite.style.top;
             }
         }, 200); // 200ms between movements
         
@@ -193,20 +212,19 @@ export function animateSchwerttanz(charId, character) {
             updateCharacterPosition(charId, { x: originalX, y: originalY });
             
             // Remove effect elements with a fade-out
-            effectContainer.style.transition = 'opacity 0.5s';
-            effectContainer.style.opacity = '0';
-            flashEffect.style.opacity = '0';
+            effectOverlay.style.transition = 'opacity 0.5s';
+            effectOverlay.style.opacity = '0';
             
             // Clear the interval as a safety measure
             clearInterval(moveInterval);
             
+            // Wait for fade-out to complete
             setTimeout(() => {
-                if (effectContainer.parentNode) {
-                    effectContainer.remove();
+                if (effectOverlay.parentNode) {
+                    effectOverlay.remove();
                 }
-                if (flashEffect.parentNode) {
-                    flashEffect.remove();
-                }
+                
+                // Animation is now fully complete
                 resolve();
             }, 500);
         }, 2000);
